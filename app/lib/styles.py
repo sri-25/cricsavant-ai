@@ -283,6 +283,8 @@ def inject_css():
             box-shadow: {SHADOW_SM};
         }}
         .csv-chat-msg b {{ font-size: 13px; text-transform: uppercase; letter-spacing: 0.04em; opacity: 0.8; }}
+        .csv-chat-msg a {{ color: {GOLD_SOFT}; text-decoration: none; border-bottom: 1px solid rgba(255,209,102,0.4); word-break: break-all; }}
+        .csv-chat-msg a:hover {{ border-bottom-color: {GOLD_SOFT}; }}
         .csv-chat-user {{
             background: rgba(91,140,255,0.12);
             border: 1px solid rgba(91,140,255,0.28);

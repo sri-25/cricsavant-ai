@@ -90,15 +90,40 @@ def get_change_log_history() -> pd.DataFrame:
 def search_players(name_search: str, max_matches: int = 8):
     """Pandas-side fuzzy search over the cached, full gold tables.
     Returns (batter_matches_df, bowler_matches_df).
+
+    A plain substring search alone is a real bug for exactly the kind
+    of query this tool exists for: the model reasonably calls this
+    with a player's actual full name ("Jasprit Bumrah"), but Cricsheet
+    -- and therefore these gold tables -- store him as "JJ Bumrah".
+    "jasprit bumrah" is not a substring of "jj bumrah", so the old
+    version returned found=False for a player who has full, real data
+    (confirmed live: Player Explorer finds "JJ Bumrah" instantly
+    searching "bumrah"). Falls back to the same surname + first-initial
+    rule lib.lakehouse.match_gold_row already uses everywhere else in
+    this app, so this tool stops disagreeing with the rest of the UI
+    about whether a well-known player "exists."
     """
     term = (name_search or "").strip().lower()
     bat_df = get_batter_profiles()
     bowl_df = get_bowler_profiles()
     if not term:
         return bat_df.iloc[0:0], bowl_df.iloc[0:0]
-    bat = bat_df[bat_df["player_name"].str.lower().str.contains(term, na=False, regex=False)].head(max_matches)
-    bowl = bowl_df[bowl_df["player_name"].str.lower().str.contains(term, na=False, regex=False)].head(max_matches)
-    return bat, bowl
+
+    def _search(df: pd.DataFrame) -> pd.DataFrame:
+        hit = df[df["player_name"].str.lower().str.contains(term, na=False, regex=False)]
+        if not hit.empty:
+            return hit.head(max_matches)
+        words = term.split()
+        if not words:
+            return df.iloc[0:0]
+        surname, first_initial = words[-1], words[0][0]
+        cand = df[df["player_name"].str.lower().str.split().str[-1] == surname]
+        if cand.empty:
+            return cand
+        narrowed = cand[cand["player_name"].str.lower().str.strip().str[0] == first_initial]
+        return (narrowed if not narrowed.empty else cand).head(max_matches)
+
+    return _search(bat_df), _search(bowl_df)
 
 
 def match_gold_row(name: str, gold_df: pd.DataFrame):

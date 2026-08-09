@@ -15,6 +15,7 @@ UI copy and an agent copy that could drift apart.
 
 import datetime
 import json
+import re
 
 import pandas as pd
 import streamlit as st
@@ -77,10 +78,25 @@ def run_agent_turn(user_text: str):
     return answer, trace
 
 
+_URL_RE = re.compile(r'(?<!href=")(?<!">)(https?://[^\s<>")]+)')
+
+
+def linkify(text: str) -> str:
+    """News-grounded answers cite sources as bare "(https://...)"
+    parenthetical URLs -- correct for grounding, but they render as
+    raw, unstyled, unclickable wall-of-text in the chat card, which is
+    exactly the kind of "cluttered" the UI got called out for. Turns
+    them into normal inline links instead.
+    """
+    if not text:
+        return text
+    return _URL_RE.sub(r'<a href="\1" target="_blank" rel="noopener">\1</a>', text)
+
+
 def render_inline_answer(answer: str, trace: list):
     st.markdown(
         f'<div class="csv-chat-msg csv-chat-assistant" style="margin-top:10px">'
-        f'<b>🏆 CricSavant</b><br>{answer}</div>',
+        f'<b>🏆 CricSavant</b><br>{linkify(answer)}</div>',
         unsafe_allow_html=True,
     )
     if trace:
@@ -267,7 +283,7 @@ with st.sidebar:
                 if user_msg:
                     st.markdown(f'<div class="csv-chat-msg csv-chat-user"><b>You</b><br>{user_msg["content"]}</div>', unsafe_allow_html=True)
                 if asst_msg:
-                    st.markdown(f'<div class="csv-chat-msg csv-chat-assistant"><b>🏆 CricSavant</b><br>{asst_msg["content"]}</div>', unsafe_allow_html=True)
+                    st.markdown(f'<div class="csv-chat-msg csv-chat-assistant"><b>🏆 CricSavant</b><br>{linkify(asst_msg["content"])}</div>', unsafe_allow_html=True)
                     if asst_msg.get("trace"):
                         with st.expander(f"🔧 {len(asst_msg['trace'])} tool call(s) used", expanded=False):
                             for t in asst_msg["trace"]:
@@ -436,7 +452,11 @@ with tab_explorer:
     with list_col:
         st.caption(f"{len(filtered)} matching players")
         display_df = filtered.copy()
-        display_df["In auction"] = display_df["in_pool"].map({True: "🔨 Yes", False: "—"})
+        # No emoji here -- st.dataframe is a canvas-rendered grid
+        # (glide-data-grid), not HTML, and it doesn't reliably paint
+        # emoji glyphs. Confirmed live: the hammer emoji rendered as a
+        # broken "^" tofu character in this exact column.
+        display_df["In auction"] = display_df["in_pool"].map({True: "Yes", False: "—"})
         display_df["Base price"] = display_df["base_price_lakh"].apply(
             lambda v: f"₹{v/100:.2f}cr" if pd.notna(v) else "—"
         )
@@ -561,11 +581,24 @@ with tab_franchise:
                     unsafe_allow_html=True,
                 )
             else:
+                roster_display = roster[["player_name", "role", "is_overseas", "acquisition_type", "price_cr", "acquired_at"]].copy()
+                # "imported" rows all share one raw timestamp -- the
+                # moment notebooks/014_seed_real_squads.py was run, not
+                # a real acquisition date -- so printing it to the
+                # microsecond ("2026-08-09T21:44:02.115787+00:00") reads
+                # as a data-quality glitch, not a real "when." Show the
+                # actual date only for genuine auction-console bids,
+                # where it's a real event worth timestamping.
+                acquired_dt = pd.to_datetime(roster_display["acquired_at"], errors="coerce")
+                roster_display["Acquired"] = acquired_dt.dt.strftime("%b %d, %Y")
+                roster_display.loc[roster_display["acquisition_type"] == "imported", "Acquired"] = "Retained / pre-season"
+                roster_display["_sort"] = acquired_dt
                 st.dataframe(
-                    roster[["player_name", "role", "is_overseas", "acquisition_type", "price_cr", "acquired_at"]]
+                    roster_display[["player_name", "role", "is_overseas", "acquisition_type", "price_cr", "Acquired", "_sort"]]
                     .rename(columns={"player_name": "Player", "role": "Role", "is_overseas": "Overseas",
-                                      "acquisition_type": "Type", "price_cr": "Price (cr)", "acquired_at": "Acquired"})
-                    .sort_values("Acquired", ascending=False),
+                                      "acquisition_type": "Type", "price_cr": "Price (cr)"})
+                    .sort_values("_sort", ascending=False)
+                    .drop(columns="_sort"),
                     use_container_width=True, hide_index=True,
                 )
                 st.caption(
