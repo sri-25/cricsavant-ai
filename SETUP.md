@@ -1,0 +1,112 @@
+# CricSavant AI — Setup From Scratch
+
+This is a linear runbook for standing this project up in a fresh Databricks Free
+Edition workspace. It exists because several steps here are not obvious from just
+reading the code — they involve Databricks UI actions, multi-step widget/restart
+sequences, or one-time toggles that were only discovered by hitting the error first.
+Every one of those is called out explicitly below, not left for you to rediscover.
+
+See `README.md` for what each file does and the current schema. This file is only
+about the order and the gotchas.
+
+## 0. Prerequisites
+
+- A Databricks Free Edition workspace.
+- A Tavily API key (free tier, no card required — [tavily.com](https://tavily.com)).
+- This repo connected as a Databricks **Git folder** (Workspace → Git folders →
+  Add repo → paste this repo's URL). That gives you the `notebooks/`, `sql/`, and
+  `app/` folders inside Databricks, matching this repo exactly.
+
+## 1. Spark pipeline (`notebooks/`)
+
+Run in this exact order. Each is a normal "Run All" unless noted otherwise.
+
+1. `003_seed_competition_config.py` — seeds the competition list. Must run before 004.
+2. `004_bronze_ingest_all_competitions.py` — downloads and lands ~9,800 matches
+   across 9 competitions. Takes a few minutes. **`FORCE_FULL_REBUILD`** near the top
+   is currently `True`; that's a one-time migration flag from when the player-identity
+   column was added. If you're running this completely fresh, it's harmless either
+   way, but leave it as `True` for now.
+3. `005_silver_matches_and_deliveries.py` — no gotchas, straight run.
+4. `006_gold_player_kpis.py` — no gotchas, straight run. Takes a minute or two
+   (full ball-by-ball scan).
+5. `007_gold_player_profiles.py` — no gotchas, straight run.
+
+`002_bronze_ingest_ipl.py` is NOT part of this sequence — it's the superseded
+single-competition walking skeleton, kept only for reference. Don't run it.
+
+## 2. Tavily + Vector Search (`notebooks/`)
+
+1. **`setup_secrets.py`** — this one needs two runs, not one:
+   - Run the first cell only. A text widget labeled "Tavily API Key" appears at the
+     top of the notebook.
+   - Click into that widget and type your real Tavily key.
+   - Now run the rest of the notebook (or Run All again). If you Run All *before*
+     filling the widget, you'll hit `ValueError: Enter your Tavily API key...` —
+     that's expected, not a bug; just fill the widget and run again.
+2. `008_tavily_player_news_ingest.py` — straight run. Has its own
+   `%pip install` + restart cell near the top; let that finish before continuing
+   (Databricks will prompt you to re-run cells below it after the restart if you
+   run the whole notebook at once — that's normal for any notebook with a restart
+   cell, not specific to this one).
+3. `009_vector_search_index.py` — straight run. The last cell polls automatically
+   until the index is ready (up to 10 minutes) — just let it run, no need to
+   babysit or re-run anything.
+
+## 3. Lakebase schema (`sql/`, via the Lakebase SQL Editor — NOT Databricks notebooks)
+
+Files in `sql/` are not notebooks. Open Lakebase's own SQL Editor (from your
+Lakebase project) and paste/run each file's contents directly, in order:
+
+1. `001_lakebase_schema.sql`
+2. `002_seed_auction_rules.sql`
+3. `003_seed_player_pool.sql`
+4. `004_add_format_rules_context.sql`
+5. `005_seed_franchises.sql`
+6. **`006_create_app_role.sql`** — has a required prerequisite not captured in any
+   file: before running this, go to your Lakebase instance's page → **Edit** →
+   turn on **Enable Postgres Native Role Login** → **Save**. Password-based Postgres
+   roles are off by default; this SQL will error with a permissions issue until
+   that's toggled on. Also: replace `REPLACE_ME_STRONG_PASSWORD` in the editor with
+   a real generated password before running — don't save that edit back to the file.
+
+## 4. Lakebase app credential (`notebooks/`)
+
+`011_setup_lakebase_app_credential.py` — same two-run pattern as `setup_secrets.py`:
+run the first cell, fill in the "Lakebase App Password" widget with the *same*
+password you used in `sql/006` above, then run the rest. It also needs
+`LAKEBASE_HOST` filled in twice in the file (once before, once after the
+`%pip install` + restart cell — widget/variable state doesn't survive a restart,
+so it has to be re-set). The last cell verifies the connection and deliberately
+tries an action it shouldn't be allowed to do (drop a table) — seeing that fail is
+the notebook working correctly, not an error to fix.
+
+## 5. Agent tools (`notebooks/`)
+
+1. `012_agent_tools.py` — straight run, includes test cells for each of the 4 tools.
+2. `013_agent_loop.py` — straight run, includes 5 test cells exercising the
+   grounding guardrails (cited news, blocked bids, name-collision disambiguation).
+
+Both have their own `%pip install databricks-vectorsearch pg8000 ... ` + restart
+cell — same note as `008` above, this is normal, just let the restart finish.
+
+## 6. Databricks App (`app/`)
+
+Not yet deployed as of this writing — see `README.md` status table. When you get
+to this step: Compute → Apps → Create App → Custom → point the source path at this
+repo's `app/` folder (via the Git folder, so it's the same files as here) → add the
+3 resources (SQL warehouse, the `cricsavant/lakebase_app_password` secret, the
+`databricks-meta-llama-3-3-70b-instruct` serving endpoint) with the exact resource
+keys already set in `app/app.yaml` → grant the app's service principal `SELECT` on
+the `cricsavant.gold` schema → Deploy.
+
+## Known gotchas, summarized
+
+| Symptom | Cause | Fix |
+| --- | --- | --- |
+| `ValueError: Enter your ... key/password in the widget` | Ran the whole notebook before filling the widget | Fill the widget, run again — expected, not a bug |
+| `ModuleNotFoundError` right after a `%pip install` cell | Python wasn't restarted yet, or cells below weren't re-run after restart | Let `dbutils.library.restartPython()` finish, then run the remaining cells |
+| `INVALID_ARRAY_INDEX` / similar Spark indexing errors | Not applicable anymore — already fixed in the current code (`get()` instead of `element_at()` on arrays) | N/A, just documenting why you won't see it |
+| `permission denied for table ...` on a Lakebase write | The `cricsavant_app` role's grants (`sql/006`) don't cover that table/column | Check `sql/006` covers what you're trying to do; it's deliberately least-privilege |
+| `Compute error — App creation failed unexpectedly` on Free Edition | Known transient regional provisioning issue (seen Nov 2025, self-resolved) | Retry later; not a code problem |
+| Postgres role creation fails on `sql/006` | "Enable Postgres Native Role Login" not toggled on yet | Toggle it on in the instance's Edit page first |
