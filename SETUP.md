@@ -32,8 +32,8 @@ Run in this exact order. Each is a normal "Run All" unless noted otherwise.
    (full ball-by-ball scan).
 5. `007_gold_player_profiles.py` — no gotchas, straight run.
 
-`002_bronze_ingest_ipl.py` is NOT part of this sequence — it's the superseded
-single-competition walking skeleton, kept only for reference. Don't run it.
+`notebooks/deprecated/` is NOT part of this sequence — superseded early attempts
+kept only for reference. Don't run anything in that folder.
 
 ## 2. Tavily + Vector Search (`notebooks/`)
 

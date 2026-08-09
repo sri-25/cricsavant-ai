@@ -30,7 +30,6 @@ Run top to bottom within each file. Files marked **deprecated** should not be ru
 
 | # | File | Purpose | Status |
 | --- | --- | --- | --- |
-| — | `002_bronze_ingest_ipl.py` | IPL-only walking skeleton, proved the download/parse pattern | Superseded by 004 — historical reference only, not part of the real pipeline |
 | — | `003_seed_competition_config.py` | Seeds `cricsavant.raw.competition_config` (which competitions to ingest) | **Run once** — 004 depends on this table existing |
 | 1 | `004_bronze_ingest_all_competitions.py` | Real bronze ingest, all 9 competitions, writes `cricsavant.raw.bronze_matches` | Run and verified (9,876 matches) |
 | 2 | `005_silver_matches_and_deliveries.py` | Bronze → `cricsavant.silver.matches` + `cricsavant.silver.deliveries`, resolves player identity | Run and verified (100% batter_id coverage) |
@@ -39,11 +38,13 @@ Run top to bottom within each file. Files marked **deprecated** should not be ru
 | — | `setup_secrets.py` | Git-safe one-time setup: stores the Tavily API key as a Databricks secret | Run once |
 | 5 | `008_tavily_player_news_ingest.py` | Pulls news articles for a two-lens player shortlist, writes `cricsavant.raw.player_news_articles` | Run and verified |
 | 6 | `009_vector_search_index.py` | Builds the Delta Sync Vector Search index over those articles | Run and verified (index ONLINE) |
-| — | `010_lakebase_schema_setup.py` | Early Lakebase schema attempt | **Deprecated — do not run.** Superseded by `sql/001-005`, see the file's own banner |
 | — | `011_setup_lakebase_app_credential.py` | Git-safe setup: creates the `cricsavant_app` Postgres role's password as a secret, verifies the connection | Run once |
 | 7 | `012_agent_tools.py` | The agent's 4 tools (standalone, with test cells) | Run and verified — all 4 tools + guardrails working |
 | 8 | `013_agent_loop.py` | Same 4 tools + LLM tool-calling loop (what the app will actually run) | Run and verified — all 5 grounding-guardrail tests passing |
-| — | `scratch_bumrah_diagnostic.py`, `scratch_phase2_capability_check.py` | One-off diagnostics used during debugging | Not part of the pipeline, safe to ignore |
+
+`notebooks/deprecated/` holds two superseded early attempts (`002_bronze_ingest_ipl.py`,
+the IPL-only walking skeleton; `010_lakebase_schema_setup.py`, an early Lakebase schema
+draft replaced by `sql/001-005`) — kept for history, not part of the run sequence.
 
 ## Run order — SQL (Lakebase SQL Editor)
 
@@ -78,6 +79,7 @@ Run top to bottom within each file. Files marked **deprecated** should not be ru
 
 - `docs/` — original plan (see caveat above).
 - `notebooks/` — Spark pipeline, Tavily/embeddings, Lakebase credential setup, agent tools.
+  `notebooks/deprecated/` — superseded early attempts, kept for history, not run.
 - `sql/` — Lakebase DDL and seed data, run via the Lakebase SQL Editor.
 - `app/` — Databricks App (Streamlit) frontend. Integration spike built, not yet deployed.
 
