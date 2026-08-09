@@ -22,7 +22,8 @@ import streamlit as st
 
 from lib import agent, charts, lakebase, lakehouse
 from lib.styles import (
-    FRANCHISE_COLORS, FRANCHISE_SHORT, ROLE_ICON, brand_header, inject_css, metric_card, pill,
+    FRANCHISE_COLORS, FRANCHISE_SHORT, ROLE_COLOR, ROLE_ICON, avatar_circle, brand_header,
+    franchise_crest, inject_css, metric_card, pill,
 )
 from lib.utils import safe_num
 
@@ -235,6 +236,13 @@ with st.sidebar:
             st.session_state.agent_messages = None
         st.session_state.active_franchise = picked
 
+        st.markdown(
+            f'<div style="display:flex;align-items:center;gap:12px;margin:2px 0 18px 2px">'
+            f'{franchise_crest(picked, FRANCHISE_SHORT.get(picked, ""), FRANCHISE_COLORS.get(picked, "#f0b429"), size=40)}'
+            f'<span style="color:#9aa3ba;font-size:14px;font-weight:600">{picked}</span></div>',
+            unsafe_allow_html=True,
+        )
+
     st.markdown("#### 💬 Ask CricSavant")
     st.caption("Grounded in real stats, live news, and your actual roster -- never a guess.")
 
@@ -346,10 +354,13 @@ with tab_auction:
             st.markdown(
                 f"""
                 <div class="csv-player-hero">
-                    <div class="csv-player-name">{ROLE_ICON.get(role,'🏏')} {current['player_name']}</div>
-                    <div class="csv-player-meta">{current.get('country','')} &nbsp;·&nbsp; Age {current.get('age','-')} &nbsp;·&nbsp; {role.title()}
-                    {" · " + current.get('bowling_style','').title() if current.get('bowling_style') not in (None, 'na') else ""}</div>
-                    <div style="margin-top:14px">{overseas_tag} &nbsp; {capped_tag}</div>
+                    <div>
+                        <div class="csv-player-name">{ROLE_ICON.get(role,'🏏')} {current['player_name']}</div>
+                        <div class="csv-player-meta">{current.get('country','')} &nbsp;·&nbsp; Age {current.get('age','-')} &nbsp;·&nbsp; {role.title()}
+                        {" · " + current.get('bowling_style','').title() if current.get('bowling_style') not in (None, 'na') else ""}</div>
+                        <div style="margin-top:14px">{overseas_tag} &nbsp; {capped_tag}</div>
+                    </div>
+                    {avatar_circle(current['player_name'], ROLE_COLOR.get(role, "#f0b429"), size=104)}
                 </div>
                 """,
                 unsafe_allow_html=True,
@@ -474,7 +485,12 @@ with tab_explorer:
             bat_row, bowl_row = find_profile_row(selected_name, batter_df, bowler_df)
             pool_info = filtered[filtered["player_name"] == selected_name].iloc[0].to_dict()
 
-            st.markdown(f"### {ROLE_ICON.get(pool_info.get('role'),'🏏')} {selected_name}")
+            name_col, avatar_col = st.columns([5, 1])
+            name_col.markdown(f"### {ROLE_ICON.get(pool_info.get('role'),'🏏')} {selected_name}")
+            avatar_col.markdown(
+                avatar_circle(selected_name, ROLE_COLOR.get(pool_info.get("role"), "#f0b429"), size=64),
+                unsafe_allow_html=True,
+            )
             if pool_info.get("in_pool"):
                 badges = pill(f"🔨 In current auction · base {fmt_cr(pool_info['base_price_lakh']/100)}", "gold")
                 if pool_info.get("country"):
@@ -548,8 +564,11 @@ with tab_franchise:
             color = FRANCHISE_COLORS.get(chosen, "#e8b84b")
             st.markdown(
                 f"""<div class="csv-player-hero" style="border-left:4px solid {color}">
-                <div class="csv-player-name">{FRANCHISE_SHORT.get(chosen, chosen)} <span style="font-size:20px;color:#8b93ab;font-weight:500">-- {chosen}</span></div>
-                <div class="csv-player-meta">{f.get('owner_label','')}</div>
+                <div>
+                    <div class="csv-player-name">{FRANCHISE_SHORT.get(chosen, chosen)} <span style="font-size:20px;color:#8b93ab;font-weight:500">-- {chosen}</span></div>
+                    <div class="csv-player-meta">{f.get('owner_label','')}</div>
+                </div>
+                {franchise_crest(chosen, FRANCHISE_SHORT.get(chosen, ""), color, size=88)}
                 </div>""",
                 unsafe_allow_html=True,
             )

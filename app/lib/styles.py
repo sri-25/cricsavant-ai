@@ -1,34 +1,51 @@
 """CricSavant AI -- visual theme.
 
 Presentation only: CSS injection + static lookup tables (franchise
-colors/short codes, role icons). No data access, no business logic.
+colors/short codes, role icons) + small HTML-generating helpers
+(avatar/crest circles). No data access, no business logic.
 
-v2 -- full revamp after direct feedback that v1 read as flat, small,
-and "not enterprise": richer layered-dark palette (three distinct
-surface levels, not one flat card color), real shadows instead of
-just hairline borders, materially bigger type at every level, and a
-denser, more deliberate card treatment throughout.
+v3 -- direct response to "I don't like to see black... add pictures,
+make it pretty, currently it looks dry and dead." Two real, separate
+problems addressed:
+  1. The base surface read as literal near-black (#08090d, ~3%
+     lightness) with color only in two faint corner gradients --
+     everywhere else was void. Swapped to a deep NAVY, not black
+     (there's a real hue in it), and widened/brightened the color
+     washes so life is visible across the page, not just the corners.
+  2. There were no player/team "photos" anywhere -- the auction hero
+     card in particular had a large dead empty rectangle where a photo
+     would go. Real player photos and official team logos are both off
+     the table (no image-fetch pipeline, and real IPL crests are
+     trademarked) -- so this adds an original alternative that's
+     honest about being a placeholder: gradient initials avatars for
+     players (colored by role) and initials crests for franchises
+     (colored by real team color), the same pattern GitHub/Slack/Linear
+     use instead of a broken-image icon when there's no real photo.
 """
 
 import streamlit as st
 
 # ---- Brand palette -------------------------------------------------
-# Layered dark surfaces (page < panel < card < elevated), the way
+# Layered dark-NAVY surfaces (page < panel < card < elevated), the way
 # Linear/Vercel/Stripe-style dashboards do it -- each level a little
 # lighter than the one below, so the UI reads as having real depth
-# instead of one flat background color with boxes drawn on top.
-BG = "#08090d"
-BG_PANEL = "#0d0f16"
-BG_CARD = "#12141d"
-BG_CARD_ELEV = "#181b27"
+# instead of one flat background color with boxes drawn on top. Every
+# stop here carries a genuine blue hue (not a desaturated gray-black),
+# which is the actual fix for "I don't like to see black."
+BG = "#0a0e1a"
+BG_PANEL = "#0f1526"
+BG_CARD = "#161d33"
+BG_CARD_ELEV = "#1e2743"
 BORDER = "rgba(255,255,255,0.09)"
-BORDER_STRONG = "rgba(255,255,255,0.16)"
+BORDER_STRONG = "rgba(255,255,255,0.18)"
 
 GOLD = "#f0b429"
 GOLD_SOFT = "#ffd166"
 BLUE = "#5b8cff"
 GREEN = "#2fd67f"
 RED = "#ff5c7a"
+PURPLE = "#b18cff"
+TEAL = "#2dd4bf"
 
 TEXT = "#f6f7fb"
 TEXT_DIM = "#9aa3ba"
@@ -36,6 +53,16 @@ TEXT_FAINT = "#6b7488"
 
 SHADOW = "0 4px 16px rgba(0,0,0,0.45), 0 0 0 1px rgba(255,255,255,0.05) inset"
 SHADOW_SM = "0 2px 8px rgba(0,0,0,0.35)"
+
+# Role -> accent color, used for avatar gradients and small role
+# indicators -- spreads color across four hues instead of everything
+# defaulting to gold, which was a real contributor to "flat."
+ROLE_COLOR = {
+    "batter": GOLD,
+    "bowler": BLUE,
+    "all-rounder": PURPLE,
+    "wicketkeeper": TEAL,
+}
 
 # Real current IPL franchise colors -- used for roster chips, purse
 # gauges, and the analytics "spend by franchise" chart so each team is
@@ -87,9 +114,10 @@ def inject_css():
 
         .stApp {{
             background:
-                radial-gradient(ellipse 900px 500px at 10% -10%, rgba(240,180,41,0.10) 0%, transparent 55%),
-                radial-gradient(ellipse 900px 600px at 95% 10%, rgba(91,140,255,0.09) 0%, transparent 55%),
-                {BG};
+                radial-gradient(ellipse 1100px 700px at 15% -5%, rgba(240,180,41,0.14) 0%, transparent 62%),
+                radial-gradient(ellipse 1200px 800px at 100% 5%, rgba(91,140,255,0.13) 0%, transparent 60%),
+                radial-gradient(ellipse 900px 700px at 50% 100%, rgba(177,140,255,0.08) 0%, transparent 65%),
+                linear-gradient(180deg, #0d1220 0%, {BG} 40%, #0c1018 100%);
             color: {TEXT};
         }}
 
@@ -258,6 +286,10 @@ def inject_css():
             overflow: hidden;
             box-shadow: {SHADOW};
             margin-bottom: 20px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 24px;
         }}
         .csv-player-name {{
             font-family: 'Space Grotesk', sans-serif;
@@ -271,6 +303,32 @@ def inject_css():
             font-size: 16px;
             margin-top: 6px;
             font-weight: 500;
+        }}
+
+        /* ---- Avatars / crests -- the "photo" substitute -----------
+        No real player photos or official team logos (no image pipeline,
+        and real crests are trademarked) -- gradient initials circles
+        instead, colored by role or real franchise color. Same pattern
+        Slack/Linear/GitHub use in place of a broken-image icon. */
+        .csv-avatar {{
+            flex-shrink: 0;
+            border-radius: 50%;
+            display: flex; align-items: center; justify-content: center;
+            font-family: 'Space Grotesk', sans-serif;
+            font-weight: 800;
+            color: #10121c;
+            box-shadow: 0 8px 24px rgba(0,0,0,0.4), 0 0 0 3px rgba(255,255,255,0.08) inset;
+            text-shadow: 0 1px 0 rgba(255,255,255,0.25);
+            letter-spacing: -0.02em;
+        }}
+        .csv-crest {{
+            flex-shrink: 0;
+            border-radius: 16px;
+            display: flex; align-items: center; justify-content: center;
+            font-family: 'Space Grotesk', sans-serif;
+            font-weight: 800;
+            color: #10121c;
+            box-shadow: 0 6px 18px rgba(0,0,0,0.4), 0 0 0 2px rgba(255,255,255,0.1) inset;
         }}
 
         /* ---- Chat drawer ---- */
@@ -372,6 +430,40 @@ def metric_card(label: str, value: str, sub: str = "", tone: str = "") -> str:
 
 def pill(text: str, tone: str = "") -> str:
     return f'<span class="csv-pill {tone}">{text}</span>'
+
+
+def _initials(name: str, n: int = 2) -> str:
+    parts = [p for p in (name or "").strip().split() if p]
+    if not parts:
+        return "?"
+    if len(parts) == 1:
+        return parts[0][:n].upper()
+    return (parts[0][0] + parts[-1][0]).upper()[:n]
+
+
+def avatar_circle(name: str, color: str = GOLD, size: int = 84) -> str:
+    """Gradient initials circle standing in for a player photo we don't
+    have -- colored by role (see ROLE_COLOR) so a franchise's roster
+    reads as visibly mixed rather than one repeated gold blob.
+    """
+    font_size = int(size * 0.36)
+    return (
+        f'<div class="csv-avatar" style="width:{size}px;height:{size}px;font-size:{font_size}px;'
+        f'background:linear-gradient(150deg, {color} 0%, {BG_CARD_ELEV} 145%);">{_initials(name)}</div>'
+    )
+
+
+def franchise_crest(name: str, short: str = "", color: str = GOLD, size: int = 56) -> str:
+    """Gradient initials crest standing in for a franchise logo --
+    official IPL crests are trademarked, so this uses the team's real
+    color with its short code instead of a fabricated or copied logo.
+    """
+    font_size = int(size * 0.32)
+    label = short or _initials(name, 3)
+    return (
+        f'<div class="csv-crest" style="width:{size}px;height:{size}px;font-size:{font_size}px;'
+        f'background:linear-gradient(150deg, {color} 0%, {BG_CARD_ELEV} 150%);">{label}</div>'
+    )
 
 
 def brand_header(title: str, subtitle: str):
