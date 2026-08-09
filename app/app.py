@@ -23,6 +23,7 @@ from lib import agent, charts, lakebase, lakehouse
 from lib.styles import (
     FRANCHISE_COLORS, FRANCHISE_SHORT, ROLE_ICON, brand_header, inject_css, metric_card, pill,
 )
+from lib.utils import safe_num
 
 st.set_page_config(page_title="CricSavant AI", page_icon="🏆", layout="wide")
 inject_css()
@@ -47,10 +48,25 @@ def run_agent_turn(user_text: str):
     """Runs one agent turn, updates the sidebar chat history, and
     returns (answer, trace) so the CALLER can also render it inline
     right where the user clicked -- don't make them go find it.
+
+    Every turn is prefixed with which franchise is currently selected
+    in the sidebar. Without this, a free-typed question like "should I
+    retain my current squad?" (no franchise named) has nothing telling
+    the model which team "my" means -- it either guesses from whatever
+    franchise happened to come up earlier in the conversation, or
+    ignores the sidebar selection entirely. The quick-prompt buttons
+    already interpolate the franchise name into their button text, so
+    this fixes the general case (typed questions) the same way.
     """
+    active = st.session_state.active_franchise
+    context_note = (
+        f"[App context: the user currently has \"{active}\" selected as their active "
+        f"franchise in the sidebar. If their question doesn't name a franchise, assume "
+        f"they mean this one.]\n" if active else ""
+    )
     with st.spinner("CricSavant is checking the data..."):
         try:
-            answer, updated_messages, trace = agent.run_agent(user_text, st.session_state.agent_messages)
+            answer, updated_messages, trace = agent.run_agent(context_note + user_text, st.session_state.agent_messages)
         except Exception as e:
             answer, updated_messages, trace = f"Agent call failed: {str(e)[:400]}", st.session_state.agent_messages, []
     st.session_state.agent_messages = updated_messages
@@ -192,7 +208,16 @@ with st.sidebar:
     if not franchises_df.empty:
         names = franchises_df["name"].tolist()
         default_idx = names.index(st.session_state.active_franchise) if st.session_state.active_franchise in names else 0
-        st.session_state.active_franchise = st.selectbox("Playing as", names, index=default_idx)
+        picked = st.selectbox("Playing as", names, index=default_idx)
+        # Switching teams mid-conversation but leaving old tool-call
+        # results (another franchise's roster/purse numbers) sitting in
+        # agent_messages is how you get an answer that's quietly still
+        # about the old team. Reset the agent's own message history on
+        # a switch -- the visible chat_display stays so nothing looks
+        # like it vanished, but the model starts the new team clean.
+        if st.session_state.active_franchise is not None and picked != st.session_state.active_franchise:
+            st.session_state.agent_messages = None
+        st.session_state.active_franchise = picked
 
     st.markdown("#### 💬 Ask CricSavant")
     st.caption("Grounded in real stats, live news, and your actual roster -- never a guess.")
@@ -300,9 +325,9 @@ with tab_auction:
 
             bat_row, bowl_row = find_profile_row(current["player_name"], batter_df, bowler_df)
             if bat_row:
-                m2.markdown(metric_card("Recent strike rate", f"{bat_row.get('recent_strike_rate') or 0:.1f}", f"{int(bat_row.get('recent_innings') or 0)} recent innings", "gold"), unsafe_allow_html=True)
+                m2.markdown(metric_card("Recent strike rate", f"{safe_num(bat_row.get('recent_strike_rate')):.1f}", f"{int(safe_num(bat_row.get('recent_innings')))} recent innings", "gold"), unsafe_allow_html=True)
             elif bowl_row:
-                m2.markdown(metric_card("Recent economy", f"{bowl_row.get('recent_economy') or 0:.2f}", f"{int(bowl_row.get('recent_innings') or 0)} recent innings", "gold"), unsafe_allow_html=True)
+                m2.markdown(metric_card("Recent economy", f"{safe_num(bowl_row.get('recent_economy')):.2f}", f"{int(safe_num(bowl_row.get('recent_innings')))} recent innings", "gold"), unsafe_allow_html=True)
             else:
                 m2.markdown(metric_card("Form data", "N/A", "No qualifying recent innings in our KPI tables"), unsafe_allow_html=True)
 
@@ -424,10 +449,10 @@ with tab_explorer:
 
             if bat_row:
                 c1, c2, c3, c4 = st.columns(4)
-                c1.markdown(metric_card("Recent SR", f"{bat_row.get('recent_strike_rate') or 0:.1f}", tone="gold"), unsafe_allow_html=True)
-                c2.markdown(metric_card("Recent avg", f"{bat_row.get('recent_average') or 0:.1f}"), unsafe_allow_html=True)
-                c3.markdown(metric_card("Career runs", f"{int(bat_row.get('career_runs') or 0):,}"), unsafe_allow_html=True)
-                c4.markdown(metric_card("Boundary %", f"{(bat_row.get('recent_boundary_pct') or 0):.1f}%"), unsafe_allow_html=True)
+                c1.markdown(metric_card("Recent SR", f"{safe_num(bat_row.get('recent_strike_rate')):.1f}", tone="gold"), unsafe_allow_html=True)
+                c2.markdown(metric_card("Recent avg", f"{safe_num(bat_row.get('recent_average')):.1f}"), unsafe_allow_html=True)
+                c3.markdown(metric_card("Career runs", f"{int(safe_num(bat_row.get('career_runs'))):,}"), unsafe_allow_html=True)
+                c4.markdown(metric_card("Boundary %", f"{safe_num(bat_row.get('recent_boundary_pct')):.1f}%"), unsafe_allow_html=True)
                 st.plotly_chart(charts.batting_phase_radar(bat_row), use_container_width=True, config={"displayModeBar": False})
                 st.plotly_chart(
                     charts.recent_vs_career_bar(bat_row, "recent_strike_rate", "career_strike_rate", "Strike rate"),
@@ -436,10 +461,12 @@ with tab_explorer:
 
             if bowl_row:
                 c1, c2, c3, c4 = st.columns(4)
-                c1.markdown(metric_card("Recent economy", f"{bowl_row.get('recent_economy') or 0:.2f}", tone="gold"), unsafe_allow_html=True)
-                c2.markdown(metric_card("Recent wickets", f"{int(bowl_row.get('recent_wickets') or 0)}"), unsafe_allow_html=True)
-                c3.markdown(metric_card("Career wickets", f"{int(bowl_row.get('career_wickets') or 0)}"), unsafe_allow_html=True)
-                c4.markdown(metric_card("Role read", (bowl_row.get('bowler_type') or 'n/a').title()), unsafe_allow_html=True)
+                c1.markdown(metric_card("Recent economy", f"{safe_num(bowl_row.get('recent_economy')):.2f}", tone="gold"), unsafe_allow_html=True)
+                c2.markdown(metric_card("Recent wickets", f"{int(safe_num(bowl_row.get('recent_wickets')))}"), unsafe_allow_html=True)
+                c3.markdown(metric_card("Career wickets", f"{int(safe_num(bowl_row.get('career_wickets')))}"), unsafe_allow_html=True)
+                bowler_type_val = bowl_row.get('bowler_type')
+                bowler_type_val = bowler_type_val if isinstance(bowler_type_val, str) and bowler_type_val else 'n/a'
+                c4.markdown(metric_card("Role read", bowler_type_val.title()), unsafe_allow_html=True)
                 st.plotly_chart(charts.bowling_phase_bars(bowl_row), use_container_width=True, config={"displayModeBar": False})
                 st.plotly_chart(
                     charts.bowler_role_scatter(bowler_df, highlight_name=selected_name),
@@ -546,16 +573,16 @@ with tab_franchise:
                     venue_bat, venue_bowl = lakehouse.venue_form_for_player(pname, chosen)
 
                     if bat_row:
-                        recent_label = f"Bat SR {bat_row.get('recent_strike_rate') or 0:.0f}"
+                        recent_label = f"Bat SR {safe_num(bat_row.get('recent_strike_rate')):.0f}"
                     elif bowl_row:
-                        recent_label = f"Bowl econ {bowl_row.get('recent_economy') or 0:.1f}"
+                        recent_label = f"Bowl econ {safe_num(bowl_row.get('recent_economy')):.1f}"
                     else:
                         recent_label = "no Cricsheet sample"
 
                     if venue_bat:
-                        venue_label = f"Bat SR {venue_bat.get('strike_rate') or 0:.0f} ({int(venue_bat.get('innings') or 0)} inns here)"
+                        venue_label = f"Bat SR {safe_num(venue_bat.get('strike_rate')):.0f} ({int(safe_num(venue_bat.get('innings')))} inns here)"
                     elif venue_bowl:
-                        venue_label = f"Bowl econ {venue_bowl.get('economy') or 0:.1f} ({int(venue_bowl.get('innings') or 0)} inns here)"
+                        venue_label = f"Bowl econ {safe_num(venue_bowl.get('economy')):.1f} ({int(safe_num(venue_bowl.get('innings')))} inns here)"
                     else:
                         venue_label = "no qualifying sample here"
 
