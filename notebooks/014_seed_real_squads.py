@@ -327,33 +327,50 @@ for franchise_name, player_name in fallback_log:
 
 # COMMAND ----------
 
-# Idempotent write: clear any previously-seeded 'imported' rows (never
-# touches 'auction' rows -- those are real practice bids placed
-# through the app, not something this reseed should ever discard),
-# then insert the real current rosters and update real purse figures.
+# Idempotent write -- WITHOUT ever using DELETE.
+#
+# cricsavant_app (sql/006) is deliberately granted only SELECT/INSERT/
+# UPDATE on franchise_roster, no DELETE -- that's the least-privilege
+# design working as intended, not a bug to route around by escalating
+# the role's permissions. So re-running this notebook safely means:
+# for each real player, UPDATE their existing 'imported' row if one's
+# already there (picks up any correction to role/bowling_style/
+# is_overseas from a later run of this file), otherwise INSERT a new
+# one. Never touches 'auction' rows -- those are real practice bids
+# placed through the app, not something this reseed should ever see.
 
 conn = get_conn()
 cur = conn.cursor()
 
-cur.execute("DELETE FROM franchise_roster WHERE acquisition_type = 'imported'")
-deleted = cur.rowcount
-print(f"Cleared {deleted} previously-imported roster row(s).")
-
 cur.execute("SELECT franchise_id, name FROM franchises")
 fid_by_name = {name: fid for fid, name in cur.fetchall()}
 
-inserted = 0
+inserted, updated = 0, 0
 for franchise_name, player_name, role, bowling_style, is_overseas in rows_to_insert:
     fid = fid_by_name.get(franchise_name)
     if fid is None:
         print(f"WARNING: no franchise row for '{franchise_name}' -- skipping {player_name}")
         continue
+
     cur.execute(
-        "INSERT INTO franchise_roster (franchise_id, player_name, role, bowling_style, is_overseas, "
-        "acquisition_type, price_cr, status) VALUES (%s, %s, %s, %s, %s, 'imported', 0, 'active')",
-        (fid, player_name, role, bowling_style, is_overseas),
+        "SELECT roster_id FROM franchise_roster WHERE franchise_id = %s AND lower(player_name) = lower(%s) "
+        "AND acquisition_type = 'imported' AND status = 'active'",
+        (fid, player_name),
     )
-    inserted += 1
+    existing = cur.fetchone()
+    if existing:
+        cur.execute(
+            "UPDATE franchise_roster SET role = %s, bowling_style = %s, is_overseas = %s WHERE roster_id = %s",
+            (role, bowling_style, is_overseas, existing[0]),
+        )
+        updated += 1
+    else:
+        cur.execute(
+            "INSERT INTO franchise_roster (franchise_id, player_name, role, bowling_style, is_overseas, "
+            "acquisition_type, price_cr, status) VALUES (%s, %s, %s, %s, %s, 'imported', 0, 'active')",
+            (fid, player_name, role, bowling_style, is_overseas),
+        )
+        inserted += 1
 
 for franchise_name, purse in PURSE_REMAINING.items():
     cur.execute(
@@ -364,7 +381,7 @@ for franchise_name, purse in PURSE_REMAINING.items():
 conn.commit()
 cur.close()
 conn.close()
-print(f"Inserted {inserted} real roster rows. Updated purse_remaining_cr for {len(PURSE_REMAINING)} franchises.")
+print(f"Inserted {inserted} new roster rows, updated {updated} existing ones. Updated purse_remaining_cr for {len(PURSE_REMAINING)} franchises.")
 
 # COMMAND ----------
 
