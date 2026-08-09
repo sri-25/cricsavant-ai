@@ -70,6 +70,13 @@ def inject_css():
 
         html, body, [class*="css"] {{
             font-family: 'Inter', -apple-system, sans-serif;
+            font-size: 16px;
+        }}
+        .stMarkdown, .stMarkdown p, .stCaption, div[data-testid="stCaptionContainer"] {{
+            font-size: 15px !important;
+        }}
+        section[data-testid="stSidebar"] .stMarkdown, section[data-testid="stSidebar"] p {{
+            font-size: 14.5px !important;
         }}
 
         .stApp {{
@@ -83,6 +90,7 @@ def inject_css():
         section[data-testid="stSidebar"] {{
             background: {BG_PANEL};
             border-right: 1px solid {BORDER};
+            min-width: 440px !important;
         }}
 
         #MainMenu, footer, header[data-testid="stHeader"] {{
@@ -114,13 +122,13 @@ def inject_css():
         .csv-brand-title {{
             font-family: 'Space Grotesk', sans-serif;
             font-weight: 700;
-            font-size: 22px;
+            font-size: 24px;
             color: {TEXT};
             line-height: 1.1;
         }}
         .csv-brand-sub {{
             color: {TEXT_DIM};
-            font-size: 12.5px;
+            font-size: 13px;
             letter-spacing: 0.04em;
             text-transform: uppercase;
         }}
@@ -134,12 +142,15 @@ def inject_css():
             border: 1px solid {BORDER};
         }}
         .stTabs [data-baseweb="tab"] {{
-            height: 44px;
+            height: 50px;
             border-radius: 10px;
             color: {TEXT_DIM};
             font-weight: 600;
-            font-size: 14.5px;
-            padding: 0 18px;
+            font-size: 16px;
+            padding: 0 20px;
+        }}
+        .stTabs [data-baseweb="tab"] p {{
+            font-size: 16px !important;
         }}
         .stTabs [aria-selected="true"] {{
             background: linear-gradient(135deg, rgba(232,184,75,0.18), rgba(232,184,75,0.05));
@@ -152,32 +163,33 @@ def inject_css():
             background: {BG_CARD};
             border: 1px solid {BORDER};
             border-radius: 16px;
-            padding: 18px 20px;
-            margin-bottom: 14px;
+            padding: 22px 24px;
+            margin-bottom: 16px;
         }}
-        .csv-card-tight {{ padding: 12px 16px; }}
+        .csv-card-tight {{ padding: 16px 20px; }}
 
         .csv-metric-label {{
             color: {TEXT_DIM};
-            font-size: 12px;
+            font-size: 13px;
             text-transform: uppercase;
             letter-spacing: 0.06em;
             font-weight: 600;
-            margin-bottom: 4px;
+            margin-bottom: 6px;
         }}
         .csv-metric-value {{
             font-family: 'Space Grotesk', sans-serif;
-            font-size: 28px;
+            font-size: 34px;
             font-weight: 700;
             color: {TEXT};
+            line-height: 1.15;
         }}
         .csv-metric-value.gold {{ color: {GOLD_SOFT}; }}
         .csv-metric-value.green {{ color: {GREEN}; }}
         .csv-metric-value.red {{ color: {RED}; }}
         .csv-metric-sub {{
             color: {TEXT_DIM};
-            font-size: 12.5px;
-            margin-top: 2px;
+            font-size: 13.5px;
+            margin-top: 4px;
         }}
 
         /* ---- Pills / chips ---- */
@@ -185,9 +197,9 @@ def inject_css():
             display: inline-flex;
             align-items: center;
             gap: 6px;
-            padding: 3px 11px;
+            padding: 5px 13px;
             border-radius: 999px;
-            font-size: 12px;
+            font-size: 13.5px;
             font-weight: 600;
             border: 1px solid {BORDER};
             background: rgba(255,255,255,0.03);
@@ -215,23 +227,23 @@ def inject_css():
         }}
         .csv-player-name {{
             font-family: 'Space Grotesk', sans-serif;
-            font-size: 32px;
+            font-size: 38px;
             font-weight: 700;
             color: {TEXT};
         }}
         .csv-player-meta {{
             color: {TEXT_DIM};
-            font-size: 14px;
-            margin-top: 2px;
+            font-size: 15.5px;
+            margin-top: 4px;
         }}
 
         /* ---- Chat drawer ---- */
         .csv-chat-msg {{
-            padding: 10px 14px;
+            padding: 12px 16px;
             border-radius: 12px;
-            margin-bottom: 8px;
-            font-size: 13.5px;
-            line-height: 1.5;
+            margin-bottom: 10px;
+            font-size: 14.5px;
+            line-height: 1.55;
         }}
         .csv-chat-user {{
             background: rgba(91,141,239,0.12);
@@ -256,9 +268,9 @@ def inject_css():
             display: flex;
             justify-content: space-between;
             align-items: center;
-            padding: 9px 4px;
+            padding: 11px 4px;
             border-bottom: 1px solid {BORDER};
-            font-size: 13px;
+            font-size: 14.5px;
         }}
         .csv-feed-row:last-child {{ border-bottom: none; }}
 

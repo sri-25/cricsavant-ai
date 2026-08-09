@@ -52,15 +52,7 @@ def get_player_form_profile(player_name_search: str, max_matches: int = 3) -> di
     if not search:
         return {"found": False, "query": player_name_search, "matches": []}
 
-    like = f"%{search}%"
-    bat_df = lakehouse.run_query(
-        "SELECT * FROM cricsavant.gold.batter_profile WHERE lower(player_name) LIKE %s LIMIT %s",
-        (like, max_matches),
-    )
-    bowl_df = lakehouse.run_query(
-        "SELECT * FROM cricsavant.gold.bowler_profile WHERE lower(player_name) LIKE %s LIMIT %s",
-        (like, max_matches),
-    )
+    bat_df, bowl_df = lakehouse.search_players(search, max_matches=max_matches)
 
     matches, key_to_entry = [], {}
     for _, row in bat_df.iterrows():
@@ -107,11 +99,93 @@ def execute_player_bid(franchise_name: str, player_name: str, price_cr: float) -
     return lakebase.execute_player_bid(franchise_name, player_name, price_cr)
 
 
+# ---- Tool 5 (retrieval): venue-aware retain/release signal. ----
+#
+# Real current roster (seeded from the actual, played-out 2026 IPL
+# season -- notebooks/014_seed_real_squads.py) joined with each
+# player's recent cross-format form AND their record specifically at
+# THIS franchise's real home venue. Deliberately returns only
+# structured real numbers -- no canned "retain" / "release" verdict
+# computed here. The judgment call is left to the model, same as
+# every other tool: it reasons from what's actually returned, cites
+# the real figures, and the grounding rules below apply to this tool
+# exactly like the other four.
+
+def get_squad_retention_analysis(franchise_name: str) -> dict:
+    status = lakebase.get_franchise_status(franchise_name, log=False)
+    if not status["found"]:
+        return {"found": False, "query": franchise_name}
+
+    home_venue = lakebase.get_home_venue(franchise_name)
+    batter_df = lakehouse.get_batter_profiles()
+    bowler_df = lakehouse.get_bowler_profiles()
+
+    players = []
+    for p in status["roster"]:
+        name = p["player_name"]
+        bat_row = lakehouse.match_gold_row(name, batter_df)
+        bowl_row = lakehouse.match_gold_row(name, bowler_df)
+        venue_bat, venue_bowl = lakehouse.venue_form_for_player(name, franchise_name)
+
+        entry = {
+            "player_name": name, "role": p.get("role"), "is_overseas": p.get("is_overseas"),
+            "recent_form": None, "home_venue_form": None,
+        }
+        if bat_row is not None:
+            b = bat_row.to_dict()
+            entry["recent_form"] = {
+                "type": "batting", "recent_innings": b.get("recent_innings"),
+                "recent_strike_rate": b.get("recent_strike_rate"), "recent_average": b.get("recent_average"),
+            }
+        elif bowl_row is not None:
+            b = bowl_row.to_dict()
+            entry["recent_form"] = {
+                "type": "bowling", "recent_innings": b.get("recent_innings"),
+                "recent_economy": b.get("recent_economy"), "recent_wickets": b.get("recent_wickets"),
+            }
+        if venue_bat:
+            entry["home_venue_form"] = {
+                "type": "batting", "innings": venue_bat.get("innings"),
+                "strike_rate": venue_bat.get("strike_rate"), "average": venue_bat.get("average"),
+            }
+        elif venue_bowl:
+            entry["home_venue_form"] = {
+                "type": "bowling", "innings": venue_bowl.get("innings"),
+                "economy": venue_bowl.get("economy"), "wickets": venue_bowl.get("wickets"),
+            }
+        players.append(entry)
+
+    result = {
+        "found": True,
+        "franchise": franchise_name,
+        "home_venue": home_venue,
+        "squad_size": len(players),
+        "purse_remaining_cr": status["franchise"].get("purse_remaining_cr"),
+        "note": (
+            "recent_form is ~18-month cross-format T20 form (all venues, regressed for sample "
+            "size). home_venue_form is specifically this player's record at the franchise's "
+            "real home ground (min. 60 balls faced/bowled there to qualify) -- null means "
+            "either they haven't played enough there to qualify, or there's no Cricsheet match "
+            "history for them at all (common for very new/uncapped signings). A player with "
+            "strong overall recent form but weak or absent home-venue form is a genuine signal "
+            "worth weighing, not a data error -- and the reverse (thin overall sample, strong "
+            "home form) is equally real."
+        ),
+        "players": players,
+    }
+    lakebase.log_agent_tool_call(
+        "get_squad_retention_analysis", "franchise_roster", status["franchise"].get("franchise_id"),
+        {"franchise_name": franchise_name, "squad_size": len(players)}, "found",
+    )
+    return result
+
+
 _TOOL_FUNCTIONS = {
     "get_player_form_profile": get_player_form_profile,
     "search_player_news": search_player_news,
     "get_franchise_status": get_franchise_status,
     "execute_player_bid": execute_player_bid,
+    "get_squad_retention_analysis": get_squad_retention_analysis,
 }
 
 TOOLS_SCHEMA = [
@@ -194,6 +268,28 @@ TOOLS_SCHEMA = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_squad_retention_analysis",
+            "description": (
+                "Get a franchise's REAL current squad (seeded from the actual 2026 IPL season) "
+                "with each player's recent cross-format form AND their record specifically at "
+                "this franchise's real home venue. Use this when asked about retain/release "
+                "decisions, squad gaps, who's out of form, or who fits/doesn't fit the home "
+                "conditions -- ahead of the real IPL 2027 auction. Returns raw figures only, "
+                "not a verdict -- form your own retain/release read from the numbers and say so "
+                "explicitly when data is missing for a player rather than assuming they're weak."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "franchise_name": {"type": "string", "description": "Name of the IPL franchise, e.g. 'Chennai Super Kings'."}
+                },
+                "required": ["franchise_name"],
+            },
+        },
+    },
 ]
 
 SYSTEM_PROMPT = """You are CricSavant AI, an auction-companion assistant for an IPL fantasy-franchise auction app.
@@ -204,7 +300,8 @@ GROUNDING RULES (never violate these):
 3. When you use information from search_player_news, always include the source URL.
 4. execute_player_bid is a real write action with real consequences for a franchise's purse. Only call it when the user has clearly specified a franchise, a player, and a price and asked you to place that bid -- do not call it speculatively or "to see what happens".
 5. If a tool call fails, returns found=False, or a bid is blocked, say so plainly and explain why using the tool's own reason -- never fill the gap with a guess.
-6. Keep answers concise (2-5 sentences unless the user asks for detail) and grounded strictly in what the tools returned.
+6. For retain/release or squad-gap questions, use get_squad_retention_analysis. Reason from the real recent_form and home_venue_form numbers it returns -- when home_venue_form is null for a player, say so explicitly ("no qualifying home-venue sample") rather than treating it as evidence they're weak there. A retain/release read is your judgment call to make and explain, grounded in the real figures -- the tool deliberately doesn't hand you a pre-computed verdict.
+7. Keep answers concise (2-5 sentences unless the user asks for detail) and grounded strictly in what the tools returned.
 """
 
 

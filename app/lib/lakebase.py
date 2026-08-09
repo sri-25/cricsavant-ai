@@ -78,14 +78,27 @@ def _log_tool_call(tool_name, table_name, franchise_id, payload, result_status):
         pass
 
 
+def log_agent_tool_call(tool_name, table_name, franchise_id, payload, result_status):
+    """Public wrapper so lib/agent.py can log a tool call without
+    reaching into this module's underscore-prefixed internal."""
+    _log_tool_call(tool_name, table_name, franchise_id, payload, result_status)
+
+
 # ---- Reference data (read-only from the app's own UI, not just the
 # agent) ------------------------------------------------------------
 
 def list_franchises() -> pd.DataFrame:
     return query_df(
         "SELECT franchise_id, name, owner_label, purse_total_cr, purse_remaining_cr, "
-        "max_squad_size, max_overseas FROM franchises WHERE is_active ORDER BY name"
+        "max_squad_size, max_overseas, home_venue FROM franchises WHERE is_active ORDER BY name"
     )
+
+
+def get_home_venue(franchise_name: str):
+    df = query_df("SELECT home_venue FROM franchises WHERE lower(name) = lower(%s)", (franchise_name,))
+    if df.empty or pd.isna(df.iloc[0]["home_venue"]):
+        return None
+    return df.iloc[0]["home_venue"]
 
 
 def list_player_pool() -> pd.DataFrame:

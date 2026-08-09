@@ -20,8 +20,8 @@ this file is correct.
 | 1 | Spark medallion pipeline (bronze/silver/gold, cross-format) | Done |
 | 2 | Tavily ingestion + embeddings + Vector Search | Done |
 | 3 | Lakebase schema (franchises/rosters/rules) + change-log sync | Done |
-| 4 | AI agent — 4 tools + grounding guardrails | Done |
-| 5 | Databricks App frontend (4 tabs + chat drawer) | Built — Live Auction Console, Player Explorer, My Franchise, Analytics tabs + persistent AI chat drawer, on top of the verified integration spike. Pending: redeploy + grant `raw`/`ops` schema and Vector Search endpoint access (see SETUP.md §6), then end-to-end click-through |
+| 4 | AI agent — 4 tools + grounding guardrails (5th tool, venue-aware retention analysis, added at the app layer) | Done |
+| 5 | Databricks App frontend (4 tabs + chat drawer) | Built — Live Auction Console, Player Explorer, My Franchise (incl. real-squad Squad & Venue Fit panel), Analytics tabs + persistent AI chat drawer, on top of the verified integration spike. Pending: redeploy + grant `raw`/`ops` schema and Vector Search endpoint access, plus run `014_seed_real_squads.py` (see SETUP.md) |
 | 6 | End-to-end test, polish, demo prep | Not started |
 
 ## Run order — notebooks
@@ -39,8 +39,9 @@ Run top to bottom within each file. Files marked **deprecated** should not be ru
 | 5 | `008_tavily_player_news_ingest.py` | Pulls news articles for a two-lens player shortlist, writes `cricsavant.raw.player_news_articles` | Run and verified |
 | 6 | `009_vector_search_index.py` | Builds the Delta Sync Vector Search index over those articles | Run and verified (index ONLINE) |
 | — | `011_setup_lakebase_app_credential.py` | Git-safe setup: creates the `cricsavant_app` Postgres role's password as a secret, verifies the connection | Run once |
-| 7 | `012_agent_tools.py` | The agent's 4 tools (standalone, with test cells) | Run and verified — all 4 tools + guardrails working |
-| 8 | `013_agent_loop.py` | Same 4 tools + LLM tool-calling loop (what the app will actually run) | Run and verified — all 5 grounding-guardrail tests passing |
+| 7 | `012_agent_tools.py` | The agent's original 4 tools (standalone, with test cells) | Run and verified — all 4 tools + guardrails working |
+| 8 | `013_agent_loop.py` | Same 4 tools + LLM tool-calling loop (validation harness -- the app runs its own copy, `app/lib/agent.py`, which adds a 5th tool) | Run and verified — all 5 grounding-guardrail tests passing |
+| 9 | `014_seed_real_squads.py` | Seeds REAL current (2026 season) rosters for all 10 franchises + real post-auction purse figures, replacing the old empty-roster placeholder | Written, not yet run — see notebook header for data provenance/confidence notes |
 
 `notebooks/deprecated/` holds two superseded early attempts (`002_bronze_ingest_ipl.py`,
 the IPL-only walking skeleton; `010_lakebase_schema_setup.py`, an early Lakebase schema
@@ -56,6 +57,7 @@ draft replaced by `sql/001-005`) — kept for history, not part of the run seque
 | 4 | `sql/004_add_format_rules_context.sql` | Adds Playing XI overseas cap / Impact Player / capped-status notes to `auction_rules` | Run |
 | 5 | `sql/005_seed_franchises.sql` | Seeds the 10 real IPL franchises at the full purse cap | Run (confirmed: 10 rows) |
 | 6 | `sql/006_create_app_role.sql` | Creates the `cricsavant_app` Postgres role (least-privilege, password-based) | Run — requires "Enable Postgres Native Role Login" toggled on first |
+| 7 | `sql/007_add_home_venue.sql` | Adds `franchises.home_venue`, seeds the 10 real current home grounds | Written, not yet run |
 
 ## Current real schema (what actually exists right now)
 
@@ -66,14 +68,15 @@ draft replaced by `sql/001-005`) — kept for history, not part of the run seque
 - `ops.lb_change_log_history` (synced from Lakebase's `change_log` via `001_sync_change_log_to_delta.py`), `ops.sync_watermark`
 
 **Lakebase (Postgres, real table names — NOT what `docs/PROJECT_PLAN.md` Section 2 says):**
-- `franchises` (10 rows, real IPL teams), `franchise_roster`, `auction_rules` (1 current row, real BCCI-cited), `player_pool` (369 rows, real BCCI-cited), `change_log`
+- `franchises` (10 rows, real IPL teams, now with `home_venue`), `franchise_roster` (real IPL 2026 rosters once `014` is run, `acquisition_type='imported'`; practice bids placed through the app are `acquisition_type='auction'`), `auction_rules` (1 current row, real BCCI-cited), `player_pool` (369 rows, real BCCI-cited), `change_log`
 - Roles: your own admin identity, plus `cricsavant_app` (password-based, least-privilege: SELECT on `franchises`/`auction_rules`/`player_pool`, SELECT+INSERT+UPDATE on `franchise_roster`, SELECT+INSERT on `change_log`, UPDATE on `franchises.purse_remaining_cr` only)
 
-**The agent's 4 tools (in `012_agent_tools.py` / `013_agent_loop.py` — real signatures, differ from `docs/PROJECT_PLAN.md` Section 8):**
+**The agent's tools (4 in `012_agent_tools.py` / `013_agent_loop.py`'s standalone validation harness; the app's own copy, `app/lib/agent.py`, has all 4 plus a 5th — real signatures, differ from `docs/PROJECT_PLAN.md` Section 8):**
 - `get_player_form_profile(player_name_search, max_matches=3)` — fuzzy name match, returns ALL matches (surfaces name collisions instead of guessing)
 - `search_player_news(query, player_name=None, num_results=5)`
 - `get_franchise_status(franchise_name)` — by name, not id
 - `execute_player_bid(franchise_name, player_name, price_cr)` — single-call validate-then-commit-or-reject (not the two-phase dry-run/confirm design originally sketched in the plan doc — same safety guarantee: nothing invalid ever gets written, just via one call instead of two)
+- `get_squad_retention_analysis(franchise_name)` — **app-only, 5th tool.** Real current roster joined with recent form AND form specifically at the franchise's real home venue (`gold.batting_form_by_venue`/`bowling_form_by_venue`, fuzzy-matched on venue name). Returns structured real numbers, not a canned verdict — the model reasons the retain/release call itself, grounded in what's returned. Backs the My Franchise tab's "Squad & Venue Fit" panel.
 
 ## Folder layout
 
@@ -93,5 +96,5 @@ draft replaced by `sql/001-005`) — kept for history, not part of the run seque
 | Third-party API | Tavily via `008` | Done |
 | Unstructured data processing | Tavily articles → embeddings → Vector Search (`009`) | Done |
 | Databricks App w/ frontend | `app/`, 4 tabs + chat drawer | Built, pending final permission grants + redeploy |
-| AI agent (retrieve + write) | `012`/`013`, 4 tools, grounding guardrails | Done |
+| AI agent (retrieve + write) | `012`/`013`, 4 tools; `app/lib/agent.py` adds a 5th (venue-aware retention analysis) | Done |
 | Lakebase CDF → Delta analytics | `change_log` table + `001_sync_change_log_to_delta.py` | Done (mechanism proven, not yet scheduled as a recurring Job) |

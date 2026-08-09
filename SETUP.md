@@ -69,6 +69,8 @@ Lakebase project) and paste/run each file's contents directly, in order:
    roles are off by default; this SQL will error with a permissions issue until
    that's toggled on. Also: replace `REPLACE_ME_STRONG_PASSWORD` in the editor with
    a real generated password before running — don't save that edit back to the file.
+7. `007_add_home_venue.sql` — adds `franchises.home_venue` + seeds the 10 real
+   current home grounds. Run before step 5's `014_seed_real_squads.py` below.
 
 ## 4. Lakebase app credential (`notebooks/`)
 
@@ -89,6 +91,16 @@ the notebook working correctly, not an error to fix.
 
 Both have their own `%pip install databricks-vectorsearch pg8000 ... ` + restart
 cell — same note as `008` above, this is normal, just let the restart finish.
+
+3. `014_seed_real_squads.py` — seeds each franchise's REAL current (2026 season)
+   roster (retained + Dec 2025 auction, cited from business-standard.com) and each
+   team's real post-auction remaining purse, replacing the old "every team starts
+   empty at the full cap" placeholder. Idempotent (safe to re-run). Prints a list
+   of any players it couldn't match to real role data at the end — that's a
+   review list, not a failure. Requires `sql/007_add_home_venue.sql` to have been
+   run first. This is what makes the 5th agent tool
+   (`get_squad_retention_analysis`) and the My Franchise tab's "Squad & Venue Fit"
+   panel meaningful instead of empty.
 
 ## 6. Databricks App (`app/`)
 
