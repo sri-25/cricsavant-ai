@@ -1,0 +1,12 @@
+command: ['streamlit', 'run', 'app.py']
+
+# Each valueFrom key below must match the "key" you assign when adding
+# that resource in the Apps UI -- see the deployment steps. Getting the
+# key names to match on both sides is the only thing that has to line up.
+env:
+  - name: WAREHOUSE_ID
+    valueFrom: cricsavant_warehouse
+  - name: LAKEBASE_APP_PASSWORD
+    valueFrom: cricsavant_lakebase_secret
+  - name: CHAT_MODEL_ENDPOINT
+    valueFrom: cricsavant_chat_model

@@ -1,0 +1,6 @@
+streamlit
+databricks-sdk
+databricks-sql-connector
+pg8000
+pandas
+openai
