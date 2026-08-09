@@ -21,7 +21,7 @@ this file is correct.
 | 2 | Tavily ingestion + embeddings + Vector Search | Done |
 | 3 | Lakebase schema (franchises/rosters/rules) + change-log sync | Done |
 | 4 | AI agent — 4 tools + grounding guardrails | Done |
-| 5 | Databricks App frontend (4 tabs + chat drawer) | In progress — integration spike built, not yet deployed/verified |
+| 5 | Databricks App frontend (4 tabs + chat drawer) | Built — Live Auction Console, Player Explorer, My Franchise, Analytics tabs + persistent AI chat drawer, on top of the verified integration spike. Pending: redeploy + grant `raw`/`ops` schema and Vector Search endpoint access (see SETUP.md §6), then end-to-end click-through |
 | 6 | End-to-end test, polish, demo prep | Not started |
 
 ## Run order — notebooks
@@ -81,7 +81,9 @@ draft replaced by `sql/001-005`) — kept for history, not part of the run seque
 - `notebooks/` — Spark pipeline, Tavily/embeddings, Lakebase credential setup, agent tools.
   `notebooks/deprecated/` — superseded early attempts, kept for history, not run.
 - `sql/` — Lakebase DDL and seed data, run via the Lakebase SQL Editor.
-- `app/` — Databricks App (Streamlit) frontend. Integration spike built, not yet deployed.
+- `app/` — Databricks App (Streamlit) frontend: `app.py` (4 tabs + chat drawer) on
+  top of `lib/` (`styles.py` theme, `lakehouse.py`/`lakebase.py` data access,
+  `agent.py` tool-calling loop, `vector_search.py`, `charts.py` Plotly visuals).
 
 ## Requirement → component map
 
@@ -90,6 +92,6 @@ draft replaced by `sql/001-005`) — kept for history, not part of the run seque
 | Spark data pipeline | `004`→`007`, bronze/silver/gold on 9 competitions, 2008-2025 | Done |
 | Third-party API | Tavily via `008` | Done |
 | Unstructured data processing | Tavily articles → embeddings → Vector Search (`009`) | Done |
-| Databricks App w/ frontend | `app/`, 4 tabs + chat drawer | In progress |
+| Databricks App w/ frontend | `app/`, 4 tabs + chat drawer | Built, pending final permission grants + redeploy |
 | AI agent (retrieve + write) | `012`/`013`, 4 tools, grounding guardrails | Done |
 | Lakebase CDF → Delta analytics | `change_log` table + `001_sync_change_log_to_delta.py` | Done (mechanism proven, not yet scheduled as a recurring Job) |

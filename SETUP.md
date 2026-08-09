@@ -92,13 +92,27 @@ cell — same note as `008` above, this is normal, just let the restart finish.
 
 ## 6. Databricks App (`app/`)
 
-Not yet deployed as of this writing — see `README.md` status table. When you get
-to this step: Compute → Apps → Create App → Custom → point the source path at this
-repo's `app/` folder (via the Git folder, so it's the same files as here) → add the
-3 resources (SQL warehouse, the `cricsavant/lakebase_app_password` secret, the
+Deployed via "Deploy from a Git repository" (see `README.md` status table). When
+setting this up: Compute → Apps → Create App → point the source at this repo's
+`app/` folder → add the 3 resources (SQL warehouse, the
+`cricsavant/lakebase_app_password` secret, the
 `databricks-meta-llama-3-3-70b-instruct` serving endpoint) with the exact resource
-keys already set in `app/app.yaml` → grant the app's service principal `SELECT` on
-the `cricsavant.gold` schema → Deploy.
+keys already set in `app/app.yaml` → Deploy.
+
+The app's service principal (shown on the App's Overview page, e.g. `app-xxxxx
+<app-name>`) needs these Unity Catalog / Vector Search grants — all 4 tabs and
+the chat agent touch different parts of the Lakehouse now, not just `gold`:
+
+| Grant | Where | Why |
+| --- | --- | --- |
+| `USE CATALOG`, `USE SCHEMA` | Catalog Explorer → `cricsavant` (catalog level) | Prerequisite for any nested SELECT to take effect |
+| `SELECT` | Catalog Explorer → `cricsavant.gold` schema | Player Explorer / Auction Console profile lookups |
+| `USE SCHEMA`, `SELECT` | Catalog Explorer → `cricsavant.raw` schema | `search_player_news` queries the `raw.player_news_articles_index` Vector Search index |
+| `USE SCHEMA`, `SELECT` | Catalog Explorer → `cricsavant.ops` schema | Analytics tab reads `ops.lb_change_log_history` |
+| **Can Query** | Compute → Vector Search → `cricsavant_endpoint` → Permissions | Required separately from the UC grant above — the endpoint itself is a permissioned resource |
+
+Missing any one of these produces the same `INSUFFICIENT_PERMISSIONS` error pattern
+hit during the Phase 5 spike, just on a different schema/endpoint.
 
 ## Known gotchas, summarized
 
