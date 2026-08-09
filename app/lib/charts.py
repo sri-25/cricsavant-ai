@@ -89,13 +89,19 @@ def batting_phase_radar(row: dict, compare_row: dict = None) -> go.Figure:
 def bowling_phase_bars(row: dict) -> go.Figure:
     phases = ["Powerplay", "Middle", "Death"]
     economies = [safe_num(row.get("powerplay_economy"), None), safe_num(row.get("middle_economy"), None), safe_num(row.get("death_economy"), None)]
+    y_vals = [e if e is not None else 0 for e in economies]
     fig = go.Figure(go.Bar(
-        x=phases, y=[e if e is not None else 0 for e in economies],
+        x=phases, y=y_vals,
         marker_color=[GOLD, BLUE, RED],
         text=[f"{v:.2f}" if v is not None else "—" for v in economies],
         textposition="outside", textfont=dict(size=15),
         width=0.5,
     ))
+    # Headroom for the "outside" text labels -- without this, a bar
+    # close to the axis max (e.g. an 8+ death economy) gets its label
+    # clipped by the figure's top edge instead of sitting above the bar.
+    top = max(y_vals) if y_vals and max(y_vals) > 0 else 1
+    fig.update_yaxes(range=[0, top * 1.22])
     return _theme(fig, height=340, title="Economy by phase")
 
 
@@ -233,5 +239,7 @@ def recent_vs_career_bar(row: dict, metric_recent: str, metric_career: str, labe
         marker_color=BLUE, width=0.35, offsetgroup=1,
         text=[f"{career_v:.1f}"], textposition="outside", textfont=dict(size=14),
     ))
+    top = max(recent_v, career_v, 1)
+    fig.update_yaxes(range=[0, top * 1.22])
     fig.update_layout(barmode="group", showlegend=True)
     return _theme(fig, height=300)

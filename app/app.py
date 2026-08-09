@@ -242,18 +242,37 @@ with st.sidebar:
                 "shows exactly which tools it called to get there.</div>",
                 unsafe_allow_html=True,
             )
-        for msg in st.session_state.chat_display:
-            css_class = "csv-chat-user" if msg["role"] == "user" else "csv-chat-assistant"
-            who = "You" if msg["role"] == "user" else "🏆 CricSavant"
-            st.markdown(
-                f'<div class="csv-chat-msg {css_class}"><b>{who}</b><br>{msg["content"]}</div>',
-                unsafe_allow_html=True,
-            )
-            if msg.get("trace"):
-                with st.expander(f"🔧 {len(msg['trace'])} tool call(s) used", expanded=False):
-                    for t in msg["trace"]:
-                        st.markdown(f"**`{t['tool']}`**  `{t['args']}`")
-                        st.json(t["result"], expanded=False)
+        else:
+            # st.container(height=...) does NOT auto-scroll to the
+            # bottom when new content is appended -- a quick-prompt
+            # click or typed question renders its answer at the END of
+            # this fixed-height box, invisibly below the fold, unless
+            # you scroll the small sidebar box yourself. That's exactly
+            # what "how do I even test the AI" looked like: click, see
+            # nothing happen. Grouping into (question, answer) turns and
+            # showing newest-first means what you just asked is always
+            # the first thing visible, no scrolling required.
+            messages = st.session_state.chat_display
+            turns, i = [], 0
+            while i < len(messages):
+                if messages[i]["role"] == "user":
+                    nxt = messages[i + 1] if i + 1 < len(messages) and messages[i + 1]["role"] == "assistant" else None
+                    turns.append((messages[i], nxt))
+                    i += 2 if nxt else 1
+                else:
+                    turns.append((None, messages[i]))
+                    i += 1
+
+            for user_msg, asst_msg in reversed(turns):
+                if user_msg:
+                    st.markdown(f'<div class="csv-chat-msg csv-chat-user"><b>You</b><br>{user_msg["content"]}</div>', unsafe_allow_html=True)
+                if asst_msg:
+                    st.markdown(f'<div class="csv-chat-msg csv-chat-assistant"><b>🏆 CricSavant</b><br>{asst_msg["content"]}</div>', unsafe_allow_html=True)
+                    if asst_msg.get("trace"):
+                        with st.expander(f"🔧 {len(asst_msg['trace'])} tool call(s) used", expanded=False):
+                            for t in asst_msg["trace"]:
+                                st.markdown(f"**`{t['tool']}`**  `{t['args']}`")
+                                st.json(t["result"], expanded=False)
 
     prompt = st.chat_input("Ask about a player, franchise, or place a bid...")
     if prompt:
@@ -517,7 +536,12 @@ with tab_franchise:
 
             m1, m2, m3 = st.columns(3)
             m1.markdown(metric_card("Purse remaining", fmt_cr(remaining), f"of {fmt_cr(total)}", "green"), unsafe_allow_html=True)
-            m2.markdown(metric_card("Squad size", f"{status['squad_size']} / {f['max_squad_size']}"), unsafe_allow_html=True)
+            squad_over_cap = status['squad_size'] > f['max_squad_size']
+            m2.markdown(metric_card(
+                "Squad size", f"{status['squad_size']} / {f['max_squad_size']}",
+                "over the 2027 auction cap -- release decisions needed" if squad_over_cap else "",
+                tone="red" if squad_over_cap else "",
+            ), unsafe_allow_html=True)
             m3.markdown(metric_card("Overseas", f"{status['overseas_count']} / {f['max_overseas']}", tone="blue" if status['overseas_count'] < f['max_overseas'] else "red"), unsafe_allow_html=True)
 
             chart_l, chart_r = st.columns(2)
@@ -569,17 +593,30 @@ with tab_franchise:
                 fit_rows = []
                 for _, prow in roster.iterrows():
                     pname = prow["player_name"]
+                    role = (prow.get("role") or "").lower()
                     bat_row, bowl_row = find_profile_row(pname, batter_df, bowler_df)
                     venue_bat, venue_bowl = lakehouse.venue_form_for_player(pname, chosen)
 
-                    if bat_row:
+                    # A specialist bowler's headline number has to be their
+                    # economy, not a stray batting strike rate from a
+                    # handful of tail-end deliveries -- "if bat_row" alone
+                    # was picking batting SR for pure bowlers (Rahul Chahar,
+                    # Akeal Hosein, Matt Henry all showed "Bat SR" here),
+                    # which is a wrong read for a retain/release decision.
+                    bowler_first = role == "bowler" and bowl_row
+
+                    if bowler_first:
+                        recent_label = f"Bowl econ {safe_num(bowl_row.get('recent_economy')):.1f}"
+                    elif bat_row:
                         recent_label = f"Bat SR {safe_num(bat_row.get('recent_strike_rate')):.0f}"
                     elif bowl_row:
                         recent_label = f"Bowl econ {safe_num(bowl_row.get('recent_economy')):.1f}"
                     else:
                         recent_label = "no Cricsheet sample"
 
-                    if venue_bat:
+                    if bowler_first and venue_bowl:
+                        venue_label = f"Bowl econ {safe_num(venue_bowl.get('economy')):.1f} ({int(safe_num(venue_bowl.get('innings')))} inns here)"
+                    elif venue_bat:
                         venue_label = f"Bat SR {safe_num(venue_bat.get('strike_rate')):.0f} ({int(safe_num(venue_bat.get('innings')))} inns here)"
                     elif venue_bowl:
                         venue_label = f"Bowl econ {safe_num(venue_bowl.get('economy')):.1f} ({int(safe_num(venue_bowl.get('innings')))} inns here)"

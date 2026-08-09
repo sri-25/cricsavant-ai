@@ -131,28 +131,40 @@ def get_squad_retention_analysis(franchise_name: str) -> dict:
             "player_name": name, "role": p.get("role"), "is_overseas": p.get("is_overseas"),
             "recent_form": None, "home_venue_form": None,
         }
+        # Report BOTH disciplines when both exist, not just whichever the
+        # code checked first. A previous version picked bat_row over
+        # bowl_row unconditionally, which meant a specialist bowler with
+        # a handful of tail-end deliveries faced got labeled purely by a
+        # meaningless batting strike rate -- their actual bowling economy
+        # (the number that matters for a retain/release call) never
+        # reached the model at all.
+        recent_form = {}
         if bat_row is not None:
             b = bat_row.to_dict()
-            entry["recent_form"] = {
-                "type": "batting", "recent_innings": b.get("recent_innings"),
+            recent_form["batting"] = {
+                "recent_innings": b.get("recent_innings"),
                 "recent_strike_rate": b.get("recent_strike_rate"), "recent_average": b.get("recent_average"),
             }
-        elif bowl_row is not None:
+        if bowl_row is not None:
             b = bowl_row.to_dict()
-            entry["recent_form"] = {
-                "type": "bowling", "recent_innings": b.get("recent_innings"),
+            recent_form["bowling"] = {
+                "recent_innings": b.get("recent_innings"),
                 "recent_economy": b.get("recent_economy"), "recent_wickets": b.get("recent_wickets"),
             }
+        entry["recent_form"] = recent_form or None
+
+        home_venue_form = {}
         if venue_bat:
-            entry["home_venue_form"] = {
-                "type": "batting", "innings": venue_bat.get("innings"),
+            home_venue_form["batting"] = {
+                "innings": venue_bat.get("innings"),
                 "strike_rate": venue_bat.get("strike_rate"), "average": venue_bat.get("average"),
             }
-        elif venue_bowl:
-            entry["home_venue_form"] = {
-                "type": "bowling", "innings": venue_bowl.get("innings"),
+        if venue_bowl:
+            home_venue_form["bowling"] = {
+                "innings": venue_bowl.get("innings"),
                 "economy": venue_bowl.get("economy"), "wickets": venue_bowl.get("wickets"),
             }
+        entry["home_venue_form"] = home_venue_form or None
         players.append(entry)
 
     result = {
@@ -300,7 +312,7 @@ GROUNDING RULES (never violate these):
 3. When you use information from search_player_news, always include the source URL.
 4. execute_player_bid is a real write action with real consequences for a franchise's purse. Only call it when the user has clearly specified a franchise, a player, and a price and asked you to place that bid -- do not call it speculatively or "to see what happens".
 5. If a tool call fails, returns found=False, or a bid is blocked, say so plainly and explain why using the tool's own reason -- never fill the gap with a guess.
-6. For retain/release or squad-gap questions, use get_squad_retention_analysis. Reason from the real recent_form and home_venue_form numbers it returns -- when home_venue_form is null for a player, say so explicitly ("no qualifying home-venue sample") rather than treating it as evidence they're weak there. A retain/release read is your judgment call to make and explain, grounded in the real figures -- the tool deliberately doesn't hand you a pre-computed verdict.
+6. For retain/release or squad-gap questions, use get_squad_retention_analysis. recent_form and home_venue_form can each contain a "batting" block, a "bowling" block, or both (all-rounders) -- weigh the block that matches the player's actual role (a bowler's economy/wickets matter more than a few tail-end deliveries faced) rather than defaulting to whichever appears first. When a block is missing/null, say so explicitly ("no qualifying home-venue sample") rather than treating it as evidence they're weak there. A retain/release read is your judgment call to make and explain, grounded in the real figures -- the tool deliberately doesn't hand you a pre-computed verdict.
 7. Keep answers concise (2-5 sentences unless the user asks for detail) and grounded strictly in what the tools returned.
 """
 
