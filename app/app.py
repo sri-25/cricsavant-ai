@@ -4,8 +4,8 @@ import pandas as pd
 import pg8000
 import streamlit as st
 from databricks import sql
-from databricks.sdk import WorkspaceClient
 from databricks.sdk.core import Config
+from openai import OpenAI
 
 # CricSavant AI -- Phase 5 spike.
 #
@@ -79,8 +79,15 @@ except Exception as e:
 st.header("3. Foundation Model endpoint -- chat completion")
 try:
     chat_model = os.environ.get("CHAT_MODEL_ENDPOINT", "databricks-meta-llama-3-3-70b-instruct")
-    w = WorkspaceClient()
-    client = w.serving_endpoints.get_open_ai_client()
+    # Same cfg.authenticate() credential source as Test 1's SQL connection
+    # -- it transparently uses the app's own service principal here.
+    # The OpenAI client wants a plain bearer-token string, not the
+    # credentials_provider callable the SQL connector accepts, so we
+    # call authenticate() once and pull the token out of the header it
+    # returns.
+    auth_headers = cfg.authenticate()
+    bearer_token = auth_headers["Authorization"].split(" ", 1)[1]
+    client = OpenAI(api_key=bearer_token, base_url=f"{cfg.host}/serving-endpoints")
     response = client.chat.completions.create(
         model=chat_model,
         messages=[{"role": "user", "content": "Reply with exactly: CricSavant model connection OK"}],
