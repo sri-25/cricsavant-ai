@@ -225,14 +225,66 @@ def inject_css():
             border-radius: 10px !important;
         }}
 
+        /* ================= Motion & modern feel ================= */
+        .main .block-container {{ animation: csv-fade-up 0.35s ease; }}
+        @keyframes csv-fade-up {{
+            from {{ opacity: 0; transform: translateY(6px); }}
+            to {{ opacity: 1; transform: translateY(0); }}
+        }}
+
+        /* Sidebar collapse/expand arrows: invisible by default (user
+        literally could not find them) -- forced visible, white chip on
+        the navy rail, gray chip when the rail is collapsed. */
+        div[data-testid="stSidebarCollapseButton"] {{ opacity: 1 !important; visibility: visible !important; }}
+        div[data-testid="stSidebarCollapseButton"] button {{
+            background: rgba(255,255,255,0.14) !important;
+            border-radius: 8px !important;
+        }}
+        div[data-testid="stSidebarCollapseButton"] button svg {{ fill: #ffffff !important; color: #ffffff !important; }}
+        div[data-testid="collapsedControl"] {{ opacity: 1 !important; visibility: visible !important; }}
+        div[data-testid="collapsedControl"] button {{
+            background: {BG_CARD} !important;
+            border: 1.5px solid {BORDER_STRONG} !important;
+            border-radius: 8px !important;
+            box-shadow: {SHADOW_SM};
+        }}
+
+        /* Radio groups -> segmented pill control (shadcn-style), not
+        1998 radio circles. Falls back gracefully if Streamlit's DOM
+        shifts: worst case you get standard radios again. */
+        .main div[role="radiogroup"] {{ gap: 10px; }}
+        .main div[role="radiogroup"] > label {{
+            border: 1.5px solid {BORDER_STRONG};
+            border-radius: 999px;
+            padding: 9px 20px;
+            background: {BG_CARD};
+            box-shadow: {SHADOW_SM};
+            transition: all 0.15s ease;
+            cursor: pointer;
+        }}
+        .main div[role="radiogroup"] > label:hover {{ border-color: {PRIMARY}; transform: translateY(-1px); }}
+        .main div[role="radiogroup"] > label > div:first-child {{ display: none; }}  /* hide the circle */
+        .main div[role="radiogroup"] > label p {{ font-weight: 700; font-size: 14.5px; }}
+        .main div[role="radiogroup"] > label:has(input:checked) {{
+            background: linear-gradient(135deg, {PRIMARY} 0%, {PRIMARY_DARK} 100%);
+            border-color: {PRIMARY};
+            box-shadow: 0 2px 10px rgba(29,78,216,0.35);
+        }}
+        .main div[role="radiogroup"] > label:has(input:checked) p {{ color: #ffffff !important; }}
+
         /* ================= Cards / metrics ================= */
         .csv-card {{
             background: {BG_CARD};
             border: 1px solid {BORDER};
-            border-radius: 14px;
+            border-radius: 16px;
             padding: 18px 22px;
             margin-bottom: 14px;
             box-shadow: {SHADOW};
+            transition: transform 0.15s ease, box-shadow 0.15s ease;
+        }}
+        .csv-card:hover {{
+            transform: translateY(-2px);
+            box-shadow: 0 4px 8px rgba(15,23,42,0.08), 0 12px 28px rgba(15,23,42,0.10);
         }}
         .csv-metric-label {{
             color: {TEXT_DIM};

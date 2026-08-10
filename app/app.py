@@ -261,6 +261,26 @@ def page_strategy():
             else:
                 st.error(res.get("reason", "Save failed."))
 
+    # ---- Squad at a glance: fills the page with the real roster
+    # instead of dead white space below the plays. ----
+    st.markdown("### 🧢 Squad at a glance")
+    if roster.empty:
+        st.caption("No roster loaded -- run notebooks/014_seed_real_squads.py.")
+    else:
+        glance_l, glance_r = st.columns([1, 1.6], gap="large")
+        with glance_l:
+            st.plotly_chart(charts.squad_role_pie(roster), use_container_width=True, config={"displayModeBar": False})
+        with glance_r:
+            glance = roster[["player_name", "role", "is_overseas"]].copy()
+            # plain text only -- the dataframe grid is canvas-rendered
+            # and drops emoji glyphs (proven live with the old hammer)
+            glance["Overseas"] = glance["is_overseas"].map({True: "Overseas", False: "Domestic"})
+            st.dataframe(
+                glance[["player_name", "role", "Overseas"]]
+                .rename(columns={"player_name": "Player", "role": "Role"}),
+                use_container_width=True, hide_index=True, height=380,
+            )
+
     # ---- Saved notebook ----
     st.markdown("### 📓 Strategy notebook")
     try:
@@ -503,10 +523,13 @@ with st.sidebar:
     )
 franchise_picker()
 
+# AI Analyst leads and is the landing page -- the centered
+# welcome-and-ask experience is the front door (user call), with the
+# Strategy Center one click away for the deep plays.
 nav = st.navigation([
-    st.Page(page_strategy, title="Strategy Center", icon="🏟️", default=True),
+    st.Page(page_chat, title="AI Analyst", icon="💬", default=True),
+    st.Page(page_strategy, title="Strategy Center", icon="🏟️"),
     st.Page(page_players, title="Players", icon="🔍"),
     st.Page(page_analytics, title="League Analytics", icon="📊"),
-    st.Page(page_chat, title="AI Analyst", icon="💬"),
 ])
 nav.run()
