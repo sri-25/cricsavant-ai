@@ -33,8 +33,6 @@ from lib.styles import (
 from lib.utils import safe_num
 
 st.set_page_config(page_title="CricSavant AI", page_icon="🏏", layout="wide")
-inject_css()
-
 # ---------------------------------------------------------------- #
 # Session state
 # ---------------------------------------------------------------- #
@@ -46,6 +44,26 @@ if "active_franchise" not in st.session_state:
     st.session_state.active_franchise = None
 if "strategy_results" not in st.session_state:
     st.session_state.strategy_results = {}  # {(franchise, kind): (answer, trace)}
+
+# Ambient glow tinted by the active franchise (persisted across
+# reruns), so switching teams re-colors the whole canvas -- CSK feels
+# gold, MI feels blue.
+inject_css(accent=FRANCHISE_COLORS.get(st.session_state.active_franchise, "#f59e0b"))
+
+
+def page_header(kicker: str, title: str, sub: str = "", kicker_color: str = "#60a5fa"):
+    """CineScope-style header: small uppercase colored kicker over a
+    big bold headline -- replaces the plain st.markdown('## ...')."""
+    st.markdown(
+        f'<div style="margin:2px 0 18px">'
+        f'<div style="color:{kicker_color};font-size:11.5px;font-weight:800;text-transform:uppercase;'
+        f'letter-spacing:0.14em;margin-bottom:6px">{kicker}</div>'
+        f'<div style="font-family:Space Grotesk,sans-serif;font-weight:800;font-size:34px;'
+        f'line-height:1.05;color:#f1f5f9">{title}</div>'
+        + (f'<div style="color:#94a3b8;font-size:14.5px;margin-top:8px">{sub}</div>' if sub else "")
+        + "</div>",
+        unsafe_allow_html=True,
+    )
 
 
 # ---------------------------------------------------------------- #
@@ -192,15 +210,23 @@ def page_strategy():
     st.markdown(team_hero(chosen, f.get("owner_label", "")), unsafe_allow_html=True)
 
     m1, m2, m3, m4 = st.columns(4)
-    m1.markdown(metric_card("Purse remaining", fmt_cr(remaining), f"of {fmt_cr(total)}", "green"), unsafe_allow_html=True)
+    m1.markdown(metric_card("Purse remaining", fmt_cr(remaining), f"of {fmt_cr(total)}", "green",
+                            progress=(remaining / total * 100) if total else 0, progress_color="#34d399"),
+                unsafe_allow_html=True)
     over_cap = status["squad_size"] > f["max_squad_size"]
     m2.markdown(metric_card("Squad size", f"{status['squad_size']} / {f['max_squad_size']}",
                             "over cap -- releases needed" if over_cap else "within cap",
-                            "red" if over_cap else ""), unsafe_allow_html=True)
+                            "red" if over_cap else "",
+                            progress=status["squad_size"] / f["max_squad_size"] * 100,
+                            progress_color="#fb7185" if over_cap else "#3b82f6"),
+                unsafe_allow_html=True)
     over_os = status["overseas_count"] > f["max_overseas"]
     m3.markdown(metric_card("Overseas", f"{status['overseas_count']} / {f['max_overseas']}",
                             "over cap" if over_os else "slots used",
-                            "red" if over_os else "blue"), unsafe_allow_html=True)
+                            "red" if over_os else "blue",
+                            progress=status["overseas_count"] / f["max_overseas"] * 100,
+                            progress_color="#fb7185" if over_os else "#a78bfa"),
+                unsafe_allow_html=True)
     role_counts = roster["role"].value_counts().to_dict() if not roster.empty else {}
     m4.markdown(metric_card("Balance", " · ".join(f"{role_counts.get(r, 0)}{r[0].upper()}" for r in
                             ["batter", "bowler", "all-rounder", "wicketkeeper"]),
@@ -300,7 +326,8 @@ def page_strategy():
 # PAGE: Players
 # ================================================================ #
 def page_players():
-    st.markdown("## 🔍 Players")
+    page_header("Scouting Intelligence", "Every player. Real numbers.",
+                "2,400+ players across 9 competitions, 2008-2025 -- phase splits, venue form, role reads.")
     batter_df = lakehouse.get_batter_profiles()
     bowler_df = lakehouse.get_bowler_profiles()
     pool_df = cached_player_pool()
@@ -395,13 +422,33 @@ def page_players():
 # PAGE: League Analytics
 # ================================================================ #
 def page_analytics():
-    st.markdown("## 📊 League Analytics")
-    st.caption("Where every franchise stands before the next auction -- purse power, squad balance, and cap pressure.")
+    page_header("League Intelligence", "Where the power sits before the auction.",
+                "Purse, squad balance, and cap pressure across all 10 franchises -- live from Lakebase.")
 
     league = cached_league_summary()
     if league.empty:
         st.info("No franchise data yet.")
         return
+
+    # Franchise card row -- real logos, purse pills (CineScope-style
+    # card rail; scrolls horizontally if the viewport is narrow)
+    cards = []
+    for _, r in league.iterrows():
+        over = int(r["squad_size"]) > int(r["max_squad_size"]) or int(r["overseas_count"]) > int(r["max_overseas"])
+        pill_html = (f'<span style="color:#fb7185;font-weight:800;font-size:11px">OVER CAP</span>' if over
+                     else f'<span style="color:#34d399;font-weight:800;font-size:11px">READY</span>')
+        cards.append(
+            f'<div style="flex:0 0 auto;width:118px;text-align:center;background:rgba(22,27,38,0.85);'
+            f'border:1px solid rgba(148,163,184,0.14);border-radius:14px;padding:12px 8px">'
+            f'<div style="display:flex;justify-content:center">{team_logo(r["name"], size=52, radius=10)}</div>'
+            f'<div style="color:#f1f5f9;font-weight:800;font-size:13px;margin-top:7px">{FRANCHISE_SHORT.get(r["name"], r["name"])}</div>'
+            f'<div style="color:#94a3b8;font-size:11.5px;margin:2px 0 4px">₹{float(r["purse_remaining_cr"]):,.2f} cr</div>'
+            f'{pill_html}</div>'
+        )
+    st.markdown(
+        '<div style="display:flex;gap:10px;overflow-x:auto;padding:2px 2px 12px">' + "".join(cards) + "</div>",
+        unsafe_allow_html=True,
+    )
 
     total_purse_left = float(league["purse_remaining_cr"].astype(float).sum())
     most_cash = league.loc[league["purse_remaining_cr"].astype(float).idxmax()]
@@ -415,7 +462,11 @@ def page_analytics():
                             "must release before auction" if len(over_cap) else "all within cap",
                             "red" if len(over_cap) else "green"), unsafe_allow_html=True)
 
-    st.plotly_chart(charts.spend_by_franchise_bar(cached_franchises()), use_container_width=True, config={"displayModeBar": False})
+    ch1, ch2 = st.columns(2)
+    with ch1:
+        st.plotly_chart(charts.spend_by_franchise_bar(cached_franchises()), use_container_width=True, config={"displayModeBar": False})
+    with ch2:
+        st.plotly_chart(charts.league_role_balance(league), use_container_width=True, config={"displayModeBar": False})
 
     st.markdown("#### Squad balance by franchise")
     disp = league.copy()
@@ -469,8 +520,8 @@ def page_chat():
             st.markdown(
                 f'<div style="text-align:center;padding:60px 0 8px">{welcome_mark}</div>'
                 f'<div style="text-align:center;font-family:Space Grotesk,sans-serif;font-weight:800;'
-                f'font-size:30px;color:#111827">How can I help {FRANCHISE_SHORT.get(chosen, "your team")} today?</div>'
-                f'<div style="text-align:center;color:#3f4a5f;font-size:15px;margin:8px 0 28px">'
+                f'font-size:32px;color:#f1f5f9">How can I help {FRANCHISE_SHORT.get(chosen, "your team")} today?</div>'
+                f'<div style="text-align:center;color:#94a3b8;font-size:15px;margin:8px 0 28px">'
                 f'Real stats · live news · your actual roster -- every answer shows its tool calls</div>',
                 unsafe_allow_html=True,
             )
@@ -497,7 +548,14 @@ def page_chat():
                 st.session_state.chat_display = []
                 st.rerun()
 
-    prompt = st.chat_input(f"Message CricSavant about {FRANCHISE_SHORT.get(chosen, 'your team')}...")
+        # Inline (in-column) chat input: on the welcome screen it sits
+        # centered directly under the suggestion cards -- not exiled
+        # to a detached bar at the bottom of the viewport, which was
+        # the "why is the search bar at the bottom" complaint. On
+        # Streamlit versions without inline support it degrades to the
+        # pinned-bottom position (still styled).
+        prompt = st.chat_input(f"Message CricSavant about {FRANCHISE_SHORT.get(chosen, 'your team')}...")
+
     text = prompt or clicked_prompt
     if text:
         with mid:

@@ -1,0 +1,11 @@
+# Dark base theme so Streamlit-internal surfaces (dataframe grid,
+# dropdown menus, tooltips) match the slate design system instead of
+# flashing white inside a dark app. The CSS layer in lib/styles.py
+# builds the glass/glow treatment on top of this base.
+[theme]
+base = "dark"
+primaryColor = "#3b82f6"
+backgroundColor = "#0b0f17"
+secondaryBackgroundColor = "#161b26"
+textColor = "#f1f5f9"
+font = "sans serif"

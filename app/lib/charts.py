@@ -12,7 +12,10 @@ shape for "no data" in these gold tables -- see lib/utils.py for why
 import pandas as pd
 import plotly.graph_objects as go
 
-from lib.styles import BG_CARD, BLUE, BORDER, FRANCHISE_COLORS, GOLD, GOLD_SOFT, GREEN, RED, TEXT, TEXT_DIM
+from lib.styles import (
+    BG_CARD, BLUE, BORDER, FRANCHISE_COLORS, FRANCHISE_SHORT, GOLD, GOLD_SOFT,
+    GREEN, PURPLE, RED, TEAL, TEXT, TEXT_DIM,
+)
 from lib.utils import safe_num
 
 FONT = dict(family="Inter, sans-serif", color=TEXT, size=14)
@@ -167,17 +170,61 @@ def squad_role_pie(roster: pd.DataFrame) -> go.Figure:
 
 
 def spend_by_franchise_bar(franchises: pd.DataFrame) -> go.Figure:
+    """Stacked spent-vs-remaining per team. The old version plotted
+    spent-only full names: every bar was ~120cr of ink (differences
+    invisible) and long names rendered clipped/faint (confirmed live).
+    Short codes in bold white + the REMAINING purse as the bright
+    contrast segment make the actual story -- who still has money --
+    readable in one glance.
+    """
     d = franchises.copy()
-    d["spent"] = d["purse_total_cr"].astype(float) - d["purse_remaining_cr"].astype(float)
-    d = d.sort_values("spent", ascending=True)
-    colors = [FRANCHISE_COLORS.get(n, GOLD) for n in d["name"]]
-    fig = go.Figure(go.Bar(
-        x=d["spent"], y=d["name"], orientation="h",
-        marker_color=colors,
-        text=[f"{v:.1f}cr" for v in d["spent"]], textposition="outside", textfont=dict(size=14),
+    d["remaining"] = d["purse_remaining_cr"].astype(float)
+    d["spent"] = d["purse_total_cr"].astype(float) - d["remaining"]
+    d["code"] = d["name"].map(lambda n: FRANCHISE_SHORT.get(n, n))
+    d = d.sort_values("remaining", ascending=True)
+    team_colors = [FRANCHISE_COLORS.get(n, GOLD) for n in d["name"]]
+
+    fig = go.Figure()
+    fig.add_trace(go.Bar(
+        x=d["spent"], y=d["code"], orientation="h", name="Spent",
+        marker=dict(color=team_colors, opacity=0.45),
+        hovertemplate="%{y} spent: ₹%{x:.2f} cr<extra></extra>",
     ))
-    fig.update_xaxes(title="Crore spent")
-    return _theme(fig, height=440, title="Spend by franchise")
+    fig.add_trace(go.Bar(
+        x=d["remaining"], y=d["code"], orientation="h", name="Remaining",
+        marker=dict(color=team_colors),
+        text=[f"₹{v:.2f}cr left" for v in d["remaining"]],
+        textposition="outside", textfont=dict(size=13, color=TEXT),
+        hovertemplate="%{y} remaining: ₹%{x:.2f} cr<extra></extra>",
+    ))
+    fig.update_layout(barmode="stack", showlegend=True)
+    fig.update_xaxes(title="₹ crore (of 125 total)", range=[0, 138])
+    fig.update_yaxes(tickfont=dict(size=14, color=TEXT), automargin=True)
+    return _theme(fig, height=440, title="Purse power -- spent vs remaining")
+
+
+def league_role_balance(league: pd.DataFrame) -> go.Figure:
+    """Stacked role composition for all 10 squads side by side -- the
+    cross-team 'who is unbalanced' read in one picture.
+    """
+    if league.empty:
+        return _empty_state("No league data yet.", height=380)
+    d = league.copy()
+    d["code"] = d["name"].map(lambda n: FRANCHISE_SHORT.get(n, n))
+    roles = [("batters", "Batters", GOLD), ("bowlers", "Bowlers", BLUE),
+             ("all_rounders", "All-rounders", PURPLE), ("wicketkeepers", "Keepers", TEAL)]
+    fig = go.Figure()
+    for col, label, color in roles:
+        fig.add_trace(go.Bar(
+            x=d["code"], y=d[col].astype(int), name=label, marker_color=color,
+            text=d[col].astype(int), textposition="inside",
+            textfont=dict(size=12, color="#0b0f17"),
+            hovertemplate="%{x} " + label + ": %{y}<extra></extra>",
+        ))
+    fig.update_layout(barmode="stack", showlegend=True)
+    fig.update_xaxes(tickfont=dict(size=13, color=TEXT))
+    fig.update_yaxes(title="Players")
+    return _theme(fig, height=400, title="Squad role balance across the league")
 
 
 def bid_outcome_donut(change_log: pd.DataFrame) -> go.Figure:
