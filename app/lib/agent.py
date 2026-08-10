@@ -448,6 +448,34 @@ STRATEGY TASKS (how to do the deep work):
 """
 
 
+def _content_to_text(content) -> str:
+    """Normalize message content to plain text. gpt-oss-120b (a
+    reasoning model) returns content as a LIST of typed blocks on
+    FMAPI -- reasoning blocks plus text blocks -- rather than the
+    plain string Llama returned; passing that list straight to the UI
+    crashed it (TypeError in linkify, confirmed live). Reasoning
+    blocks are the model's scratchpad, not the answer, so they're
+    dropped; text blocks are joined.
+    """
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for block in content:
+            if isinstance(block, dict):
+                if block.get("type") in ("reasoning", "thinking"):
+                    continue
+                t = block.get("text") or block.get("content")
+                if isinstance(t, str):
+                    parts.append(t)
+            elif isinstance(block, str):
+                parts.append(block)
+        return "\n".join(p for p in parts if p).strip()
+    return str(content)
+
+
 def run_agent(user_message: str, messages: list = None, max_turns: int = 8):
     """Runs one user turn through the tool-calling loop.
 
@@ -476,7 +504,7 @@ def run_agent(user_message: str, messages: list = None, max_turns: int = 8):
         messages.append(choice.message.model_dump(exclude_none=True))
 
         if not choice.message.tool_calls:
-            return choice.message.content, messages, trace
+            return _content_to_text(choice.message.content), messages, trace
 
         for tool_call in choice.message.tool_calls:
             fn_name = tool_call.function.name

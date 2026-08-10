@@ -128,12 +128,16 @@ def franchise_picker():
             st.session_state.agent_messages = None
         st.session_state.active_franchise = picked
         st.markdown(
-            f'<div style="display:flex;justify-content:center;margin:10px 0 6px">{team_logo(picked, size=120, radius=18)}</div>',
+            f'<div style="display:flex;justify-content:center;margin:12px 0 8px">{team_logo(picked, size=128, radius=20)}</div>',
             unsafe_allow_html=True,
         )
+        # White name on navy (team colors like GT's own navy would
+        # vanish here); the team color rides on a small underline bar.
         st.markdown(
-            f'<div style="text-align:center;color:{FRANCHISE_COLORS.get(picked, "#b45309")};'
-            f'font-weight:800;font-size:15px;margin-bottom:14px">{picked}</div>',
+            f'<div style="text-align:center;margin-bottom:16px">'
+            f'<div style="color:#ffffff;font-weight:800;font-size:15.5px">{picked}</div>'
+            f'<div style="width:56px;height:4px;border-radius:2px;margin:7px auto 0;'
+            f'background:{FRANCHISE_COLORS.get(picked, "#f59e0b")}"></div></div>',
             unsafe_allow_html=True,
         )
     return picked
@@ -142,6 +146,47 @@ def franchise_picker():
 # ================================================================ #
 # PAGE: Strategy Center
 # ================================================================ #
+def chat_panel(height: int = 460):
+    """Compact live chat, embedded beside the strategy content so the
+    AI is 'in front' on the main page -- not hidden behind a nav
+    click. Shares history with the AI Analyst page. Newest turn shown
+    first: fixed-height containers don't autoscroll, so newest-at-
+    bottom means fresh answers render invisibly below the fold.
+    """
+    st.markdown("#### 💬 Ask CricSavant")
+    box = st.container(height=height)
+    with box:
+        if not st.session_state.chat_display:
+            st.caption(
+                "Ask anything about your squad, targets, or form -- "
+                "e.g. *\"Which bowler should we release?\"* Newest answer appears at the top."
+            )
+        msgs = st.session_state.chat_display
+        turns, i = [], 0
+        while i < len(msgs):
+            if msgs[i]["role"] == "user":
+                nxt = msgs[i + 1] if i + 1 < len(msgs) and msgs[i + 1]["role"] == "assistant" else None
+                turns.append((msgs[i], nxt))
+                i += 2 if nxt else 1
+            else:
+                turns.append((None, msgs[i]))
+                i += 1
+        for user_msg, asst_msg in reversed(turns):
+            if user_msg:
+                with st.chat_message("user", avatar="🧑‍💼"):
+                    st.markdown(user_msg["content"])
+            if asst_msg:
+                with st.chat_message("assistant", avatar="🏆"):
+                    st.markdown(linkify(asst_msg["content"]))
+                    if asst_msg.get("trace"):
+                        render_trace(asst_msg["trace"])
+    prompt = st.chat_input("Ask about your squad, targets, form...", key="strategy_chat_input")
+    if prompt:
+        with st.spinner("Checking the real data..."):
+            run_agent_turn(prompt)
+        st.rerun()
+
+
 def page_strategy():
     chosen = st.session_state.active_franchise
     if not chosen:
@@ -158,22 +203,29 @@ def page_strategy():
     remaining = float(f["purse_remaining_cr"])
     roster = pd.DataFrame(status["roster"])
 
-    st.markdown(team_hero(chosen, f.get("owner_label", "")), unsafe_allow_html=True)
+    main_col, chat_col = st.columns([1.8, 1], gap="large")
 
-    m1, m2, m3, m4 = st.columns(4)
-    m1.markdown(metric_card("Purse remaining", fmt_cr(remaining), f"of {fmt_cr(total)}", "green"), unsafe_allow_html=True)
-    over_cap = status["squad_size"] > f["max_squad_size"]
-    m2.markdown(metric_card("Squad size", f"{status['squad_size']} / {f['max_squad_size']}",
-                            "over cap -- releases needed" if over_cap else "within cap",
-                            "red" if over_cap else ""), unsafe_allow_html=True)
-    over_os = status["overseas_count"] > f["max_overseas"]
-    m3.markdown(metric_card("Overseas", f"{status['overseas_count']} / {f['max_overseas']}",
-                            "over cap" if over_os else "slots used",
-                            "red" if over_os else "blue"), unsafe_allow_html=True)
-    role_counts = roster["role"].value_counts().to_dict() if not roster.empty else {}
-    m4.markdown(metric_card("Balance", " · ".join(f"{role_counts.get(r, 0)}{r[0].upper()}" for r in
-                            ["batter", "bowler", "all-rounder", "wicketkeeper"]),
-                            "B=bat, B=bowl, A=AR, W=WK"), unsafe_allow_html=True)
+    with chat_col:
+        chat_panel()
+
+    with main_col:
+        st.markdown(team_hero(chosen, f.get("owner_label", "")), unsafe_allow_html=True)
+
+        m1, m2 = st.columns(2)
+        m3, m4 = st.columns(2)
+        m1.markdown(metric_card("Purse remaining", fmt_cr(remaining), f"of {fmt_cr(total)}", "green"), unsafe_allow_html=True)
+        over_cap = status["squad_size"] > f["max_squad_size"]
+        m2.markdown(metric_card("Squad size", f"{status['squad_size']} / {f['max_squad_size']}",
+                                "over cap -- releases needed" if over_cap else "within cap",
+                                "red" if over_cap else ""), unsafe_allow_html=True)
+        over_os = status["overseas_count"] > f["max_overseas"]
+        m3.markdown(metric_card("Overseas", f"{status['overseas_count']} / {f['max_overseas']}",
+                                "over cap" if over_os else "slots used",
+                                "red" if over_os else "blue"), unsafe_allow_html=True)
+        role_counts = roster["role"].value_counts().to_dict() if not roster.empty else {}
+        m4.markdown(metric_card("Balance", " · ".join(f"{role_counts.get(r, 0)}{r[0].upper()}" for r in
+                                ["batter", "bowler", "all-rounder", "wicketkeeper"]),
+                                "B=bat, B=bowl, A=AR, W=WK"), unsafe_allow_html=True)
 
     st.markdown("### 🎯 Strategy plays")
     st.caption(
@@ -446,10 +498,10 @@ def page_chat():
 # ================================================================ #
 with st.sidebar:
     st.markdown(
-        '<div style="display:flex;align-items:center;gap:12px;padding:4px 0 14px">'
+        '<div style="display:flex;align-items:center;gap:12px;padding:4px 0 14px;border-bottom:1px solid rgba(255,255,255,0.12);margin-bottom:10px">'
         '<span style="font-size:30px">🏏</span>'
-        '<div><div style="font-family:Space Grotesk,sans-serif;font-weight:800;font-size:21px;color:#0f172a">CricSavant AI</div>'
-        '<div style="color:#526078;font-size:11.5px;text-transform:uppercase;letter-spacing:0.07em;font-weight:700">Franchise Strategy Platform</div></div></div>',
+        '<div><div style="font-family:Space Grotesk,sans-serif;font-weight:800;font-size:21px;color:#ffffff">CricSavant AI</div>'
+        '<div style="color:#9fb0cc;font-size:11.5px;text-transform:uppercase;letter-spacing:0.07em;font-weight:700">Franchise Strategy Platform</div></div></div>',
         unsafe_allow_html=True,
     )
 franchise_picker()
