@@ -1,10 +1,16 @@
-# CricSavant AI — Cricket Franchise Auction War Room
+# CricSavant AI — IPL Franchise Strategy Platform
 
-Capstone project. An AI-assisted cricket auction "war room": stand up your own
-franchise, scout players using cross-format form data built by a Spark pipeline,
-pull injury/news context via Tavily, and bid through an agent that can look things
-up and take real, rule-validated write actions — with every write flowing through
-a Lakebase change log into Delta for analytics.
+Capstone project. An AI-powered franchise war room: pick your real IPL
+franchise, and the Chief Analyst — grounded in a Spark-built cross-format
+form database, live Tavily news, and your real 2026 squad in Lakebase —
+builds your retention plan, your auction shortlist, and your matchday XI,
+saves them to a downloadable strategy notebook, and logs every action
+through a Lakebase change log into Delta for analytics.
+
+**Live app:** https://cricsavant-ai-7474650687479467.aws.databricksapps.com
+
+**Submission documents:** `SUBMISSION.md` (stage-wise development story +
+requirement map) and `ARCHITECTURE.md` (system diagram) — start there.
 
 **This file is the current source of truth for what's actually built.**
 `docs/PROJECT_PLAN.md` is the original planning doc — useful for the reasoning
@@ -20,9 +26,9 @@ this file is correct.
 | 1 | Spark medallion pipeline (bronze/silver/gold, cross-format) | Done |
 | 2 | Tavily ingestion + embeddings + Vector Search | Done |
 | 3 | Lakebase schema (franchises/rosters/rules) + change-log sync | Done |
-| 4 | AI agent — 4 tools + grounding guardrails (5th tool, venue-aware retention analysis, added at the app layer) | Done |
-| 5 | Databricks App frontend (4 tabs + chat drawer) | Built — Live Auction Console, Player Explorer, My Franchise (incl. real-squad Squad & Venue Fit panel), Analytics tabs + persistent AI chat drawer, on top of the verified integration spike. Pending: redeploy + grant `raw`/`ops` schema and Vector Search endpoint access, plus run `014_seed_real_squads.py` (see SETUP.md) |
-| 6 | End-to-end test, polish, demo prep | Not started |
+| 4 | AI agent — grew to 7 tools (5 retrieval + strategy-notes write/read) on `databricks-gpt-oss-120b`, grounding guardrails | Done |
+| 5 | Databricks App frontend — war-room console: War Room (strategy plays + notebook), Chief Analyst chat, Scouting, League Analytics (+ CDF audit strip); real team logos | Done — deployed and live-tested |
+| 6 | End-to-end test, polish, demo prep | Done — hardened through repeated live browser scans (see SUBMISSION.md Stage 6) |
 
 ## Run order — notebooks
 
@@ -41,7 +47,7 @@ Run top to bottom within each file. Files marked **deprecated** should not be ru
 | — | `011_setup_lakebase_app_credential.py` | Git-safe setup: creates the `cricsavant_app` Postgres role's password as a secret, verifies the connection | Run once |
 | 7 | `012_agent_tools.py` | The agent's original 4 tools (standalone, with test cells) | Run and verified — all 4 tools + guardrails working |
 | 8 | `013_agent_loop.py` | Same 4 tools + LLM tool-calling loop (validation harness -- the app runs its own copy, `app/lib/agent.py`, which adds a 5th tool) | Run and verified — all 5 grounding-guardrail tests passing |
-| 9 | `014_seed_real_squads.py` | Seeds REAL current (2026 season) rosters for all 10 franchises + real post-auction purse figures, replacing the old empty-roster placeholder | Written, not yet run — see notebook header for data provenance/confidence notes |
+| 9 | `014_seed_real_squads.py` | Seeds REAL current (2026 season) rosters for all 10 franchises + real post-auction purse figures, replacing the old empty-roster placeholder | Run and verified (248 players across 10 teams; 8 role fallbacks — see notebook header for provenance/confidence notes) |
 
 `notebooks/deprecated/` holds two superseded early attempts (`002_bronze_ingest_ipl.py`,
 the IPL-only walking skeleton; `010_lakebase_schema_setup.py`, an early Lakebase schema
@@ -57,7 +63,8 @@ draft replaced by `sql/001-005`) — kept for history, not part of the run seque
 | 4 | `sql/004_add_format_rules_context.sql` | Adds Playing XI overseas cap / Impact Player / capped-status notes to `auction_rules` | Run |
 | 5 | `sql/005_seed_franchises.sql` | Seeds the 10 real IPL franchises at the full purse cap | Run (confirmed: 10 rows) |
 | 6 | `sql/006_create_app_role.sql` | Creates the `cricsavant_app` Postgres role (least-privilege, password-based) | Run — requires "Enable Postgres Native Role Login" toggled on first |
-| 7 | `sql/007_add_home_venue.sql` | Adds `franchises.home_venue`, seeds the 10 real current home grounds | Written, not yet run |
+| 7 | `sql/007_add_home_venue.sql` | Adds `franchises.home_venue`, seeds the 10 real current home grounds | Run and verified |
+| 8 | `sql/008_strategy_notes.sql` | Creates `strategy_notes` — the agent's write surface (append-only for the app role) after the product pivot from practice bidding to strategy | Run and verified |
 
 ## Current real schema (what actually exists right now)
 

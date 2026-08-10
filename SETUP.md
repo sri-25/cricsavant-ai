@@ -107,9 +107,11 @@ cell — same note as `008` above, this is normal, just let the restart finish.
 Deployed via "Deploy from a Git repository" (see `README.md` status table). When
 setting this up: Compute → Apps → Create App → point the source at this repo's
 `app/` folder → add the 3 resources (SQL warehouse, the
-`cricsavant/lakebase_app_password` secret, the
-`databricks-meta-llama-3-3-70b-instruct` serving endpoint) with the exact resource
-keys already set in `app/app.yaml` → Deploy.
+`cricsavant/lakebase_app_password` secret, the **`databricks-gpt-oss-120b`**
+serving endpoint — chosen over Llama 3.3 70B for materially stronger multi-step
+tool-calling; Claude endpoints aren't offered on Free Edition) with the exact
+resource keys already set in `app/app.yaml` → Deploy. Also run
+`sql/008_strategy_notes.sql` (agent write surface) before first use.
 
 The app's service principal (shown on the App's Overview page, e.g. `app-xxxxx
 <app-name>`) needs these Unity Catalog / Vector Search grants — all 4 tabs and
