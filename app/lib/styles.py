@@ -141,11 +141,68 @@ def inject_css(accent: str = MAGENTA):
 
         #MainMenu, footer {{ visibility: hidden; }}
         header[data-testid="stHeader"] {{ background: transparent; height: 0; }}
-        section[data-testid="stSidebar"] {{ display: none; }}  /* header-bar layout, no sidebar */
-        .main .block-container {{ animation: csv-fade-up 0.4s ease; padding-top: 1.2rem; max-width: 1500px; }}
+        .main .block-container {{
+            animation: csv-fade-up 0.4s ease;
+            padding-top: 1.4rem;
+            padding-left: 3rem; padding-right: 3rem;
+            max-width: 100%;
+        }}
         @keyframes csv-fade-up {{
             from {{ opacity: 0; transform: translateY(8px); }}
             to {{ opacity: 1; transform: translateY(0); }}
+        }}
+        /* Vertical rhythm: sections breathe instead of stacking flush */
+        .main h4 {{ margin-top: 1.8rem !important; margin-bottom: 0.7rem !important; }}
+        .main h3 {{ margin-top: 1.4rem !important; }}
+
+        /* ============ Sidebar: glass rail, war-room skin ============ */
+        section[data-testid="stSidebar"] {{
+            background: rgba(14,17,23,0.96);
+            backdrop-filter: blur(14px);
+            border-right: 1px solid {BORDER};
+            min-width: 300px !important;
+        }}
+        section[data-testid="stSidebar"] * {{ color: {TEXT}; }}
+        section[data-testid="stSidebar"] div[data-testid="stWidgetLabel"] p {{
+            font-family: {MONO} !important;
+            color: {TEXT_FAINT} !important;
+            font-size: 9.5px !important; font-weight: 700 !important;
+            text-transform: uppercase; letter-spacing: 0.16em;
+        }}
+        section[data-testid="stSidebar"] div[data-baseweb="select"] > div {{
+            background: {BG_CARD} !important;
+            border: 1px solid {BORDER_STRONG} !important;
+            border-radius: 10px !important;
+        }}
+        div[data-testid="stSidebarNav"] a {{
+            border-radius: 10px;
+            padding: 10px 14px !important;
+            margin: 3px 10px;
+            transition: all 0.15s ease;
+        }}
+        div[data-testid="stSidebarNav"] a span {{
+            font-family: {MONO} !important;
+            color: {TEXT_DIM} !important;
+            font-size: 11.5px !important; font-weight: 700 !important;
+            letter-spacing: 0.12em; text-transform: uppercase;
+        }}
+        div[data-testid="stSidebarNav"] a:hover {{ background: rgba(148,163,184,0.08); }}
+        div[data-testid="stSidebarNav"] a:hover span {{ color: {TEXT} !important; }}
+        div[data-testid="stSidebarNav"] a[aria-current="page"] {{
+            background: {BG_CARD_ELEV};
+            box-shadow: inset 0 0 0 1px {BORDER_STRONG}, 0 0 14px {MAGENTA}22;
+        }}
+        div[data-testid="stSidebarNav"] a[aria-current="page"] span {{ color: {MAGENTA_SOFT} !important; }}
+        div[data-testid="stSidebarCollapseButton"] {{ opacity: 1 !important; visibility: visible !important; }}
+        div[data-testid="stSidebarCollapseButton"] button {{
+            background: rgba(148,163,184,0.12) !important; border-radius: 8px !important;
+        }}
+        div[data-testid="stSidebarCollapseButton"] button svg {{ fill: {TEXT} !important; color: {TEXT} !important; }}
+        div[data-testid="collapsedControl"] {{ opacity: 1 !important; visibility: visible !important; }}
+        div[data-testid="collapsedControl"] button {{
+            background: {BG_CARD} !important;
+            border: 1px solid {BORDER_STRONG} !important;
+            border-radius: 8px !important;
         }}
 
         /* ============ Mono micro-label system ============ */
