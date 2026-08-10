@@ -1,20 +1,25 @@
-"""CricSavant AI -- the real app.
+"""CricSavant AI -- franchise strategy platform.
 
-4 tabs (Live Auction Console, Player Explorer, My Franchise, Analytics)
-over a persistent AI chat drawer in the sidebar. Built on the 3
-connection paths proven in the Phase 5 integration spike:
-  - Unity Catalog gold tables, via a SQL warehouse       (lib/lakehouse.py)
-  - Lakebase (franchises/roster/player_pool/change_log)  (lib/lakebase.py)
-  - Foundation Model API (the chat agent)                (lib/agent.py)
-plus Vector Search for player news (lib/vector_search.py).
+v2 architecture, after the product pivot (user decision): the practice
+Auction Console is gone; the app is now built around giving each
+franchise CONTROL over its strategy. Multi-page (st.navigation), not
+four tabs crammed into one screen:
 
-The chat agent and the UI's own bid form call the EXACT SAME
-lib/lakebase.py functions -- there's one set of auction rules, not a
-UI copy and an agent copy that could drift apart.
+  🏟️ Strategy Center  -- the heart: one-click deep AI runs (retention
+                          plan, auction plan, playing-XI simulation)
+                          for the selected franchise, saveable to a
+                          permanent strategy notebook (Lakebase).
+  🔍 Players           -- search any of ~2,400 real players, form charts.
+  📊 League Analytics  -- cross-franchise business view (purse, squad
+                          balance), plus the CDF-sync proof strip.
+  💬 AI Analyst        -- free-form chat on NATIVE st.chat components
+                          (the old custom-HTML sidebar chat was buggy
+                          and uncoordinated -- this replaces it).
+
+The agent is Claude Sonnet on Databricks FMAPI (CHAT_MODEL_ENDPOINT
+resource), with 7 tools incl. save_strategy_note as the write action.
 """
 
-import datetime
-import json
 import re
 
 import pandas as pd
@@ -22,107 +27,37 @@ import streamlit as st
 
 from lib import agent, charts, lakebase, lakehouse
 from lib.styles import (
-    FRANCHISE_COLORS, FRANCHISE_SHORT, ROLE_COLOR, ROLE_ICON, avatar_circle, brand_header,
-    franchise_crest, inject_css, metric_card, pill,
+    FRANCHISE_COLORS, FRANCHISE_SHORT, ROLE_COLOR, ROLE_ICON, avatar_circle,
+    inject_css, metric_card, pill, team_hero, team_logo,
 )
 from lib.utils import safe_num
 
-st.set_page_config(page_title="CricSavant AI", page_icon="🏆", layout="wide")
+st.set_page_config(page_title="CricSavant AI", page_icon="🏏", layout="wide")
 inject_css()
 
 # ---------------------------------------------------------------- #
 # Session state
 # ---------------------------------------------------------------- #
 if "agent_messages" not in st.session_state:
-    st.session_state.agent_messages = None  # full message log incl. system prompt, passed to run_agent
+    st.session_state.agent_messages = None
 if "chat_display" not in st.session_state:
-    st.session_state.chat_display = []  # [{role, content, trace?}] for rendering
-if "auction_idx" not in st.session_state:
-    st.session_state.auction_idx = 0
+    st.session_state.chat_display = []
 if "active_franchise" not in st.session_state:
     st.session_state.active_franchise = None
+if "strategy_results" not in st.session_state:
+    st.session_state.strategy_results = {}  # {(franchise, kind): (answer, trace)}
 
 
 # ---------------------------------------------------------------- #
-# Small helpers
+# Shared helpers
 # ---------------------------------------------------------------- #
-def run_agent_turn(user_text: str):
-    """Runs one agent turn, updates the sidebar chat history, and
-    returns (answer, trace) so the CALLER can also render it inline
-    right where the user clicked -- don't make them go find it.
-
-    Every turn is prefixed with which franchise is currently selected
-    in the sidebar. Without this, a free-typed question like "should I
-    retain my current squad?" (no franchise named) has nothing telling
-    the model which team "my" means -- it either guesses from whatever
-    franchise happened to come up earlier in the conversation, or
-    ignores the sidebar selection entirely. The quick-prompt buttons
-    already interpolate the franchise name into their button text, so
-    this fixes the general case (typed questions) the same way.
-    """
-    active = st.session_state.active_franchise
-    context_note = (
-        f"[App context: the user currently has \"{active}\" selected as their active "
-        f"franchise in the sidebar. If their question doesn't name a franchise, assume "
-        f"they mean this one.]\n" if active else ""
-    )
-    with st.spinner("CricSavant is checking the data..."):
-        try:
-            answer, updated_messages, trace = agent.run_agent(context_note + user_text, st.session_state.agent_messages)
-        except Exception as e:
-            answer, updated_messages, trace = f"Agent call failed: {str(e)[:400]}", st.session_state.agent_messages, []
-    st.session_state.agent_messages = updated_messages
-    st.session_state.chat_display.append({"role": "user", "content": user_text})
-    st.session_state.chat_display.append({"role": "assistant", "content": answer, "trace": trace})
-    if any(t.get("tool") == "execute_player_bid" for t in trace):
-        invalidate_after_bid()
-    return answer, trace
-
-
-_URL_RE = re.compile(r'(?<!href=")(?<!">)(https?://[^\s<>")]+)')
+_URL_RE = re.compile(r'(?<!\()(?<!href=")(https?://[^\s<>")\]]+)')
 
 
 def linkify(text: str) -> str:
-    """News-grounded answers cite sources as bare "(https://...)"
-    parenthetical URLs -- correct for grounding, but they render as
-    raw, unstyled, unclickable wall-of-text in the chat card, which is
-    exactly the kind of "cluttered" the UI got called out for. Turns
-    them into normal inline links instead.
-    """
     if not text:
         return text
-    return _URL_RE.sub(r'<a href="\1" target="_blank" rel="noopener">\1</a>', text)
-
-
-def render_inline_answer(answer: str, trace: list):
-    st.markdown(
-        f'<div class="csv-chat-msg csv-chat-assistant" style="margin-top:10px">'
-        f'<b>🏆 CricSavant</b><br>{linkify(answer)}</div>',
-        unsafe_allow_html=True,
-    )
-    if trace:
-        with st.expander(f"🔧 {len(trace)} tool call(s) used -- what the agent actually looked up", expanded=True):
-            for t in trace:
-                st.markdown(f"**`{t['tool']}`**  `{t['args']}`")
-                st.json(t["result"], expanded=False)
-
-
-def parse_payload(val) -> dict:
-    """change_log.payload is JSONB in Lakebase and lands as a JSON
-    string once it's gone through Spark's JDBC read + Delta write
-    (001_sync_change_log_to_delta.py) into ops.lb_change_log_history.
-    pg8000's own dict-vs-str behavior for jsonb columns has also
-    varied across versions, so this accepts either shape rather than
-    assuming one.
-    """
-    if isinstance(val, dict):
-        return val
-    if isinstance(val, str) and val.strip():
-        try:
-            return json.loads(val)
-        except (ValueError, TypeError):
-            return {}
-    return {}
+    return _URL_RE.sub(r"[\1](\1)", text)
 
 
 def fmt_cr(v) -> str:
@@ -132,14 +67,9 @@ def fmt_cr(v) -> str:
         return "-"
 
 
-@st.cache_data(ttl=20, show_spinner=False)
+@st.cache_data(ttl=30, show_spinner=False)
 def cached_franchises() -> pd.DataFrame:
     return lakebase.list_franchises()
-
-
-@st.cache_data(ttl=20, show_spinner=False)
-def cached_unowned() -> pd.DataFrame:
-    return lakebase.list_unowned_players()
 
 
 @st.cache_data(ttl=60, show_spinner=False)
@@ -147,600 +77,387 @@ def cached_player_pool() -> pd.DataFrame:
     return lakebase.list_player_pool()
 
 
-def invalidate_after_bid():
-    cached_franchises.clear()
-    cached_unowned.clear()
+@st.cache_data(ttl=60, show_spinner=False)
+def cached_league_summary() -> pd.DataFrame:
+    return lakebase.league_squad_summary()
 
 
-def find_profile_row(player_name: str, batter_df: pd.DataFrame, bowler_df: pd.DataFrame):
-    """Thin wrapper over lib.lakehouse.match_gold_row -- kept here so
-    every caller in this file can use the short name; the actual
-    fuzzy-matching logic lives in lib/lakehouse.py so the agent's
-    tools (lib/agent.py) use the exact same rule, not a second copy.
+def run_agent_turn(user_text: str, record_in_chat: bool = True):
+    """One agent turn. Prefixes the active franchise so 'my squad'
+    always means the selected team; returns (answer, trace).
     """
-    bat = lakehouse.match_gold_row(player_name, batter_df)
-    bowl = lakehouse.match_gold_row(player_name, bowler_df)
-    return (bat.to_dict() if bat is not None else None,
-            bowl.to_dict() if bowl is not None else None)
+    active = st.session_state.active_franchise
+    context_note = (
+        f'[App context: the user manages "{active}". If their request doesn\'t name a '
+        f"franchise, it means this one.]\n" if active else ""
+    )
+    try:
+        answer, updated_messages, trace = agent.run_agent(
+            context_note + user_text, st.session_state.agent_messages
+        )
+    except Exception as e:
+        answer, updated_messages, trace = f"Agent call failed: {str(e)[:400]}", st.session_state.agent_messages, []
+    st.session_state.agent_messages = updated_messages
+    if record_in_chat:
+        st.session_state.chat_display.append({"role": "user", "content": user_text})
+        st.session_state.chat_display.append({"role": "assistant", "content": answer, "trace": trace})
+    return answer, trace
 
 
-def build_player_universe(batter_df: pd.DataFrame, bowler_df: pd.DataFrame, pool_df: pd.DataFrame) -> pd.DataFrame:
-    """The full, browsable player list: every player with real KPI
-    data in the gold tables (~1,500), unioned with the 369-player
-    current auction shortlist. Searching for a real, well-known
-    player who isn't in this particular mini-auction (already
-    contracted elsewhere, or a historical player) still finds them --
-    just tagged as not currently up for bid, instead of returning
-    nothing the way a pool-only search did.
-    """
-    pool_names_lower = {n.lower(): r for n, r in zip(pool_df["player_name"], pool_df.to_dict("records"))}
-    pool_surname_index: dict = {}
-    for n, r in pool_names_lower.items():
-        sn = n.strip().split()[-1] if n.strip() else ""
-        pool_surname_index.setdefault(sn, []).append(r)
-
-    bat_names_set = set(batter_df["player_name"])
-    bowl_names_set = set(bowler_df["player_name"])
-    all_names = sorted(bat_names_set | bowl_names_set | set(pool_df["player_name"]))
-    rows = []
-    for name in all_names:
-        has_bat = name in bat_names_set
-        has_bowl = name in bowl_names_set
-        pool_row = pool_names_lower.get(name.lower())
-        if pool_row is None:
-            surname = name.strip().split()[-1].lower() if name.strip() else ""
-            first_initial = name.strip()[0].lower() if name.strip() else ""
-            cands = pool_surname_index.get(surname, [])
-            if len(cands) == 1:
-                pool_row = cands[0]
-            elif len(cands) > 1:
-                narrowed = [c for c in cands if c["player_name"].strip()[0].lower() == first_initial]
-                pool_row = narrowed[0] if len(narrowed) == 1 else None
-
-        if pool_row:
-            rows.append({
-                "player_name": name, "role": pool_row.get("role"), "country": pool_row.get("country"),
-                "is_overseas": pool_row.get("is_overseas"), "base_price_lakh": pool_row.get("base_price_lakh"),
-                "capped_status": pool_row.get("capped_status"), "in_pool": True,
-                "has_batting": has_bat, "has_bowling": has_bowl,
-            })
-        else:
-            role = "all-rounder" if (has_bat and has_bowl) else ("bowler" if has_bowl else "batter")
-            rows.append({
-                "player_name": name, "role": role, "country": None,
-                "is_overseas": None, "base_price_lakh": None,
-                "capped_status": None, "in_pool": False,
-                "has_batting": has_bat, "has_bowling": has_bowl,
-            })
-    return pd.DataFrame(rows)
+def render_trace(trace: list):
+    if trace:
+        with st.expander(f"🔧 {len(trace)} tool call(s) -- what the AI actually looked up", expanded=False):
+            for t in trace:
+                st.markdown(f"**`{t['tool']}`**  `{t['args']}`")
+                st.json(t["result"], expanded=False)
 
 
-# ---------------------------------------------------------------- #
-# Sidebar -- franchise switcher + persistent AI chat drawer
-# ---------------------------------------------------------------- #
-with st.sidebar:
-    brand_header("CricSavant AI", "Auction War Room")
-
+def franchise_picker():
+    """Sidebar franchise selector with the real team logo."""
     franchises_df = cached_franchises()
-    if not franchises_df.empty:
-        names = franchises_df["name"].tolist()
-        default_idx = names.index(st.session_state.active_franchise) if st.session_state.active_franchise in names else 0
-        picked = st.selectbox("Playing as", names, index=default_idx)
-        # Switching teams mid-conversation but leaving old tool-call
-        # results (another franchise's roster/purse numbers) sitting in
-        # agent_messages is how you get an answer that's quietly still
-        # about the old team. Reset the agent's own message history on
-        # a switch -- the visible chat_display stays so nothing looks
-        # like it vanished, but the model starts the new team clean.
+    if franchises_df.empty:
+        st.sidebar.warning("No franchises found.")
+        return None
+    names = franchises_df["name"].tolist()
+    default_idx = names.index(st.session_state.active_franchise) if st.session_state.active_franchise in names else 0
+    with st.sidebar:
+        picked = st.selectbox("Your franchise", names, index=default_idx)
+        # Team switch resets the agent's memory -- stale tool results
+        # from another franchise otherwise bleed into answers.
         if st.session_state.active_franchise is not None and picked != st.session_state.active_franchise:
             st.session_state.agent_messages = None
         st.session_state.active_franchise = picked
-
         st.markdown(
-            f'<div style="display:flex;align-items:center;gap:12px;margin:2px 0 18px 2px">'
-            f'{franchise_crest(picked, FRANCHISE_SHORT.get(picked, ""), FRANCHISE_COLORS.get(picked, "#f0b429"), size=40)}'
-            f'<span style="color:#9aa3ba;font-size:14px;font-weight:600">{picked}</span></div>',
+            f'<div style="display:flex;justify-content:center;margin:10px 0 6px">{team_logo(picked, size=120, radius=18)}</div>',
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            f'<div style="text-align:center;color:{FRANCHISE_COLORS.get(picked, "#b45309")};'
+            f'font-weight:800;font-size:15px;margin-bottom:14px">{picked}</div>',
+            unsafe_allow_html=True,
+        )
+    return picked
+
+
+# ================================================================ #
+# PAGE: Strategy Center
+# ================================================================ #
+def page_strategy():
+    chosen = st.session_state.active_franchise
+    if not chosen:
+        st.info("Pick your franchise in the sidebar to begin.")
+        return
+
+    status = lakebase.get_franchise_status(chosen, log=False)
+    if not status["found"]:
+        st.error("Franchise not found.")
+        return
+
+    f = status["franchise"]
+    total = float(f["purse_total_cr"])
+    remaining = float(f["purse_remaining_cr"])
+    roster = pd.DataFrame(status["roster"])
+
+    st.markdown(team_hero(chosen, f.get("owner_label", "")), unsafe_allow_html=True)
+
+    m1, m2, m3, m4 = st.columns(4)
+    m1.markdown(metric_card("Purse remaining", fmt_cr(remaining), f"of {fmt_cr(total)}", "green"), unsafe_allow_html=True)
+    over_cap = status["squad_size"] > f["max_squad_size"]
+    m2.markdown(metric_card("Squad size", f"{status['squad_size']} / {f['max_squad_size']}",
+                            "over cap -- releases needed" if over_cap else "within cap",
+                            "red" if over_cap else ""), unsafe_allow_html=True)
+    over_os = status["overseas_count"] > f["max_overseas"]
+    m3.markdown(metric_card("Overseas", f"{status['overseas_count']} / {f['max_overseas']}",
+                            "over cap" if over_os else "slots used",
+                            "red" if over_os else "blue"), unsafe_allow_html=True)
+    role_counts = roster["role"].value_counts().to_dict() if not roster.empty else {}
+    m4.markdown(metric_card("Balance", " · ".join(f"{role_counts.get(r, 0)}{r[0].upper()}" for r in
+                            ["batter", "bowler", "all-rounder", "wicketkeeper"]),
+                            "B=bat, B=bowl, A=AR, W=WK"), unsafe_allow_html=True)
+
+    st.markdown("### 🎯 Strategy plays")
+    st.caption(
+        "Each play runs the AI through your real squad, real form data, real venue splits, and the "
+        "real auction pool -- then you can save the plan to your strategy notebook."
+    )
+
+    plays = {
+        "retention": (
+            "📋 Retention & release plan",
+            f"Build a retention and release plan for {chosen} ahead of the IPL 2027 auction. "
+            "Group the squad into retain / release / borderline with the real numbers beside each name, "
+            "state the purse freed by the releases, and name the gaps those releases open.",
+        ),
+        "auction": (
+            "🛒 Auction plan (whom to sign)",
+            f"Build {chosen}'s auction plan: first identify the squad's weakest areas from real form, "
+            "then find the best available players in the auction pool for those gaps, and recommend "
+            "specific signings with base price vs. our remaining purse math.",
+        ),
+        "xi": (
+            "🏏 Best XI + Impact Player",
+            f"Simulate {chosen}'s strongest playing XI for a home game: batting order, bowling options, "
+            "max 4 overseas on the field, and name the Impact Player substitution. Justify each slot "
+            "with the player's actual numbers and flag thin-data picks honestly.",
+        ),
+    }
+
+    bc1, bc2, bc3 = st.columns(3)
+    for col, (kind, (label, prompt)) in zip((bc1, bc2, bc3), plays.items()):
+        if col.button(label, key=f"play_{kind}", use_container_width=True, type="primary"):
+            with st.spinner("CricSavant is working through the real data -- deep runs take ~30-60s..."):
+                answer, trace = run_agent_turn(prompt, record_in_chat=False)
+            st.session_state.strategy_results[(chosen, kind)] = (answer, trace)
+
+    note_type_for_kind = {"retention": "retention_plan", "auction": "auction_targets", "xi": "playing_xi"}
+    for kind, (label, _) in plays.items():
+        result = st.session_state.strategy_results.get((chosen, kind))
+        if result:
+            answer, trace = result
+            st.markdown(f"#### {label}")
+            with st.chat_message("assistant", avatar="🏆"):
+                st.markdown(linkify(answer))
+            render_trace(trace)
+            sc1, sc2 = st.columns([1, 4])
+            if sc1.button("💾 Save to notebook", key=f"save_{kind}"):
+                res = lakebase.save_strategy_note(chosen, note_type_for_kind[kind], answer, created_by="user")
+                if res.get("success"):
+                    st.toast(f"Saved to {chosen}'s strategy notebook.", icon="✅")
+                else:
+                    st.error(res.get("reason", "Save failed."))
+
+    # ---- Saved notebook ----
+    st.markdown("### 📓 Strategy notebook")
+    try:
+        notes = lakebase.list_strategy_notes(chosen, limit=10)
+    except Exception:
+        notes = pd.DataFrame()
+    if notes.empty:
+        st.caption("No saved plans yet -- run a strategy play above and save it.")
+    else:
+        for _, n in notes.iterrows():
+            ts = pd.to_datetime(n["created_at"]).strftime("%b %d, %H:%M")
+            with st.expander(f"{n['note_type'].replace('_', ' ').title()} · {ts} · by {n['created_by']}"):
+                st.markdown(n["content"])
+
+
+# ================================================================ #
+# PAGE: Players
+# ================================================================ #
+def page_players():
+    st.markdown("## 🔍 Players")
+    batter_df = lakehouse.get_batter_profiles()
+    bowler_df = lakehouse.get_bowler_profiles()
+    pool_df = cached_player_pool()
+
+    pool_names = set(pool_df["player_name"].str.lower())
+    all_names = sorted(set(batter_df["player_name"]) | set(bowler_df["player_name"]) | set(pool_df["player_name"]))
+
+    fc1, fc2 = st.columns([3, 1])
+    search = fc1.text_input("Search player", placeholder="e.g. Bumrah, Conway, Rashid...")
+    scope = fc2.selectbox("Scope", ["All players", "In auction pool only"])
+
+    names = all_names
+    if search:
+        s = search.lower()
+        names = [n for n in names if s in n.lower()]
+    if scope == "In auction pool only":
+        names = [n for n in names if n.lower() in pool_names]
+
+    st.caption(f"{len(names):,} of {len(all_names):,} players")
+    if not names:
+        st.info("No players match. Try a shorter search -- some players are stored by initials (e.g. 'JJ Bumrah').")
+        return
+
+    selected = st.selectbox("Player", names)
+    if not selected:
+        return
+
+    bat_row = lakehouse.match_gold_row(selected, batter_df)
+    bowl_row = lakehouse.match_gold_row(selected, bowler_df)
+    bat_row = bat_row.to_dict() if bat_row is not None else None
+    bowl_row = bowl_row.to_dict() if bowl_row is not None else None
+
+    role = "all-rounder" if (bat_row and bowl_row) else ("bowler" if bowl_row else "batter")
+    hc1, hc2 = st.columns([10, 1])
+    hc1.markdown(f"### {ROLE_ICON.get(role, '🏏')} {selected}")
+    hc2.markdown(avatar_circle(selected, ROLE_COLOR.get(role, "#d97706"), size=56), unsafe_allow_html=True)
+    if selected.lower() in pool_names:
+        prow = pool_df[pool_df["player_name"].str.lower() == selected.lower()].iloc[0]
+        st.markdown(
+            pill(f"In current auction pool · base {fmt_cr(float(prow['base_price_lakh']) / 100)}", "gold")
+            + "&nbsp;" + pill(str(prow["country"]), ""),
             unsafe_allow_html=True,
         )
 
-    st.markdown("#### 💬 Ask CricSavant")
-    st.caption("Grounded in real stats, live news, and your actual roster -- never a guess.")
+    if not bat_row and not bowl_row:
+        st.info("No qualifying recent-form data in the KPI tables (thin sample across 2008-2025 competitions).")
+        return
 
-    qcols = st.columns(2)
-    quick_prompts = [
-        "Bumrah's recent bowling form?",
-        f"{st.session_state.active_franchise}'s roster & purse?" if st.session_state.active_franchise else "Roster & purse?",
-        "Any recent injury news I should know?",
-        "Who are the top death-overs finishers?",
-    ]
-    for i, qp in enumerate(quick_prompts):
-        if qcols[i % 2].button(qp, key=f"qp_{i}", use_container_width=True):
-            run_agent_turn(qp)
-
-    chat_box = st.container(height=440)
-    with chat_box:
-        if not st.session_state.chat_display:
-            st.markdown(
-                '<div class="csv-chat-msg csv-chat-assistant">Hi, I\'m CricSavant AI. Ask me about '
-                "player form, news, franchise budgets, or tell me to place a bid. Every answer below "
-                "shows exactly which tools it called to get there.</div>",
-                unsafe_allow_html=True,
+    if bat_row:
+        c1, c2, c3, c4 = st.columns(4)
+        c1.markdown(metric_card("Recent SR", f"{safe_num(bat_row.get('recent_strike_rate')):.1f}", tone="gold"), unsafe_allow_html=True)
+        c2.markdown(metric_card("Recent avg", f"{safe_num(bat_row.get('recent_average')):.1f}"), unsafe_allow_html=True)
+        c3.markdown(metric_card("Career runs", f"{int(safe_num(bat_row.get('career_runs'))):,}"), unsafe_allow_html=True)
+        c4.markdown(metric_card("Boundary %", f"{safe_num(bat_row.get('recent_boundary_pct')):.1f}%"), unsafe_allow_html=True)
+        ch1, ch2 = st.columns(2)
+        with ch1:
+            st.plotly_chart(charts.batting_phase_radar(bat_row), use_container_width=True, config={"displayModeBar": False})
+        with ch2:
+            st.plotly_chart(
+                charts.recent_vs_career_bar(bat_row, "recent_strike_rate", "career_strike_rate", "Strike rate"),
+                use_container_width=True, config={"displayModeBar": False},
             )
-        else:
-            # st.container(height=...) does NOT auto-scroll to the
-            # bottom when new content is appended -- a quick-prompt
-            # click or typed question renders its answer at the END of
-            # this fixed-height box, invisibly below the fold, unless
-            # you scroll the small sidebar box yourself. That's exactly
-            # what "how do I even test the AI" looked like: click, see
-            # nothing happen. Grouping into (question, answer) turns and
-            # showing newest-first means what you just asked is always
-            # the first thing visible, no scrolling required.
-            messages = st.session_state.chat_display
-            turns, i = [], 0
-            while i < len(messages):
-                if messages[i]["role"] == "user":
-                    nxt = messages[i + 1] if i + 1 < len(messages) and messages[i + 1]["role"] == "assistant" else None
-                    turns.append((messages[i], nxt))
-                    i += 2 if nxt else 1
-                else:
-                    turns.append((None, messages[i]))
-                    i += 1
 
-            for user_msg, asst_msg in reversed(turns):
-                if user_msg:
-                    st.markdown(f'<div class="csv-chat-msg csv-chat-user"><b>You</b><br>{user_msg["content"]}</div>', unsafe_allow_html=True)
-                if asst_msg:
-                    st.markdown(f'<div class="csv-chat-msg csv-chat-assistant"><b>🏆 CricSavant</b><br>{linkify(asst_msg["content"])}</div>', unsafe_allow_html=True)
-                    if asst_msg.get("trace"):
-                        with st.expander(f"🔧 {len(asst_msg['trace'])} tool call(s) used", expanded=False):
-                            for t in asst_msg["trace"]:
-                                st.markdown(f"**`{t['tool']}`**  `{t['args']}`")
-                                st.json(t["result"], expanded=False)
+    if bowl_row:
+        c1, c2, c3, c4 = st.columns(4)
+        c1.markdown(metric_card("Recent economy", f"{safe_num(bowl_row.get('recent_economy')):.2f}", tone="gold"), unsafe_allow_html=True)
+        c2.markdown(metric_card("Recent wickets", f"{int(safe_num(bowl_row.get('recent_wickets')))}"), unsafe_allow_html=True)
+        c3.markdown(metric_card("Career wickets", f"{int(safe_num(bowl_row.get('career_wickets')))}"), unsafe_allow_html=True)
+        btype = bowl_row.get("bowler_type")
+        c4.markdown(metric_card("Role read", btype.title() if isinstance(btype, str) and btype else "n/a"), unsafe_allow_html=True)
+        ch1, ch2 = st.columns(2)
+        with ch1:
+            st.plotly_chart(charts.bowling_phase_bars(bowl_row), use_container_width=True, config={"displayModeBar": False})
+        with ch2:
+            st.plotly_chart(
+                charts.bowler_role_scatter(bowler_df, highlight_name=bowl_row.get("player_name")),
+                use_container_width=True, config={"displayModeBar": False},
+            )
 
-    prompt = st.chat_input("Ask about a player, franchise, or place a bid...")
-    if prompt:
-        run_agent_turn(prompt)
-        st.rerun()  # needed here: the chat history container above already rendered this pass
+    if st.button("🤖 Ask CricSavant about this player", type="primary"):
+        with st.spinner("Checking real form and news..."):
+            answer, trace = run_agent_turn(
+                f"Assess {selected} as a potential auction pick for my franchise -- recent form, role fit, any news.",
+                record_in_chat=False,
+            )
+        with st.chat_message("assistant", avatar="🏆"):
+            st.markdown(linkify(answer))
+        render_trace(trace)
 
-    if st.session_state.chat_display and st.button("🗑 Clear conversation", use_container_width=True):
+
+# ================================================================ #
+# PAGE: League Analytics
+# ================================================================ #
+def page_analytics():
+    st.markdown("## 📊 League Analytics")
+    st.caption("Where every franchise stands before the next auction -- purse power, squad balance, and cap pressure.")
+
+    league = cached_league_summary()
+    if league.empty:
+        st.info("No franchise data yet.")
+        return
+
+    total_purse_left = float(league["purse_remaining_cr"].astype(float).sum())
+    most_cash = league.loc[league["purse_remaining_cr"].astype(float).idxmax()]
+    over_cap = league[league["squad_size"].astype(int) > league["max_squad_size"].astype(int)]
+
+    m1, m2, m3 = st.columns(3)
+    m1.markdown(metric_card("League purse in play", f"₹{total_purse_left:,.1f} cr", "combined remaining, all 10 teams", "gold"), unsafe_allow_html=True)
+    m2.markdown(metric_card("Most purse power", FRANCHISE_SHORT.get(most_cash["name"], most_cash["name"]),
+                            f"{fmt_cr(most_cash['purse_remaining_cr'])} remaining", "green"), unsafe_allow_html=True)
+    m3.markdown(metric_card("Teams over squad cap", f"{len(over_cap)}",
+                            "must release before auction" if len(over_cap) else "all within cap",
+                            "red" if len(over_cap) else "green"), unsafe_allow_html=True)
+
+    st.plotly_chart(charts.spend_by_franchise_bar(cached_franchises()), use_container_width=True, config={"displayModeBar": False})
+
+    st.markdown("#### Squad balance by franchise")
+    disp = league.copy()
+    disp["Purse left (cr)"] = disp["purse_remaining_cr"].astype(float).round(2)
+    disp["Squad"] = disp["squad_size"].astype(str) + " / " + disp["max_squad_size"].astype(str)
+    disp["Overseas"] = disp["overseas_count"].astype(str) + " / " + disp["max_overseas"].astype(str)
+    st.dataframe(
+        disp[["name", "Purse left (cr)", "Squad", "Overseas", "batters", "bowlers", "all_rounders", "wicketkeepers", "home_venue"]]
+        .rename(columns={"name": "Franchise", "batters": "Bat", "bowlers": "Bowl",
+                          "all_rounders": "AR", "wicketkeepers": "WK", "home_venue": "Home venue"}),
+        use_container_width=True, hide_index=True,
+    )
+
+    # ---- CDF sync proof (capstone requirement), deliberately small ----
+    st.markdown("#### ⚙️ Data pipeline health")
+    try:
+        live_log = lakebase.all_change_log()
+        synced_log = lakehouse.get_change_log_history()
+        lag = max(len(live_log) - len(synced_log), 0)
+        pc1, pc2 = st.columns([1, 3])
+        pc1.markdown(metric_card("Synced to Delta", f"{len(synced_log)} / {len(live_log)}",
+                                 "events current" if lag == 0 else f"{lag} pending sync",
+                                 "green" if lag == 0 else "gold"), unsafe_allow_html=True)
+        pc2.caption(
+            "Every AI tool call and saved plan is written to Lakebase `change_log`, then synced to the "
+            "`cricsavant.ops.lb_change_log_history` Delta table (001_sync_change_log_to_delta.py) -- the "
+            "Lakebase→Delta CDF mechanism, kept visible here as proof without taking over the page."
+        )
+        with st.expander("Recent activity log"):
+            st.dataframe(live_log.sort_values("event_id", ascending=False).head(30), use_container_width=True, hide_index=True)
+    except Exception as e:
+        st.caption(f"Pipeline strip unavailable: {str(e)[:150]}")
+
+
+# ================================================================ #
+# PAGE: AI Analyst (native chat)
+# ================================================================ #
+def page_chat():
+    chosen = st.session_state.active_franchise
+    st.markdown("## 💬 AI Analyst")
+    st.caption(
+        f"Talking strategy for **{chosen}**. Grounded in real stats, real news, your real roster -- "
+        "every answer shows the tool calls behind it." if chosen else "Pick a franchise in the sidebar first."
+    )
+
+    quick = st.columns(3)
+    quick_prompts = [
+        "Where is my squad weakest?",
+        "Any injury news on my players?",
+        "Show my saved strategy notes",
+    ]
+    clicked_prompt = None
+    for col, qp in zip(quick, quick_prompts):
+        if col.button(qp, use_container_width=True):
+            clicked_prompt = qp
+
+    for msg in st.session_state.chat_display:
+        avatar = "🧑‍💼" if msg["role"] == "user" else "🏆"
+        with st.chat_message(msg["role"], avatar=avatar):
+            st.markdown(linkify(msg["content"]))
+            if msg.get("trace"):
+                render_trace(msg["trace"])
+
+    prompt = st.chat_input("Ask about your squad, targets, or tell me to save a plan...")
+    text = prompt or clicked_prompt
+    if text:
+        with st.chat_message("user", avatar="🧑‍💼"):
+            st.markdown(text)
+        with st.chat_message("assistant", avatar="🏆"):
+            with st.spinner("Checking the real data..."):
+                answer, trace = run_agent_turn(text)
+            st.markdown(linkify(answer))
+            render_trace(trace)
+
+    if st.session_state.chat_display and st.button("🗑 Clear conversation"):
         st.session_state.agent_messages = None
         st.session_state.chat_display = []
         st.rerun()
 
-# ---------------------------------------------------------------- #
-# Main content
-# ---------------------------------------------------------------- #
-brand_header("CricSavant AI", "Bring your own franchise -- powered by real cross-format form data")
-
-batter_df = lakehouse.get_batter_profiles()
-bowler_df = lakehouse.get_bowler_profiles()
-
-tab_auction, tab_explorer, tab_franchise, tab_analytics = st.tabs(
-    ["🔨 Live Auction Console", "🔍 Player Explorer", "🏛️ My Franchise", "📊 Analytics"]
-)
 
 # ================================================================ #
-# TAB 1 -- Live Auction Console
+# Shell
 # ================================================================ #
-with tab_auction:
-    pool = cached_unowned()
-    if pool.empty:
-        st.info("Every player in the pool has been acquired -- the auction is complete.")
-    else:
-        st.session_state.auction_idx %= len(pool)
-        current = pool.iloc[st.session_state.auction_idx].to_dict()
-
-        nav_l, nav_mid, nav_r = st.columns([1, 6, 1])
-        if nav_l.button("⬅ Prev", use_container_width=True):
-            st.session_state.auction_idx = (st.session_state.auction_idx - 1) % len(pool)
-            st.rerun()
-        nav_mid.markdown(
-            f"<div style='text-align:center;color:#8b93ab;padding-top:10px;font-size:15px'>"
-            f"Lot {st.session_state.auction_idx + 1} of {len(pool)} still available &nbsp;·&nbsp; set {current.get('set_code','-')}</div>",
-            unsafe_allow_html=True,
-        )
-        if nav_r.button("Next ➡", use_container_width=True):
-            st.session_state.auction_idx = (st.session_state.auction_idx + 1) % len(pool)
-            st.rerun()
-
-        left, right = st.columns([1.4, 1])
-
-        with left:
-            role = current.get("role", "batter")
-            base_cr = float(current["base_price_lakh"]) / 100.0
-            overseas_tag = pill("Overseas", "blue") if current.get("is_overseas") else pill("Domestic", "")
-            capped_tag = pill(current.get("capped_status", "").title(), "gold") if current.get("capped_status") == "capped" else pill("Uncapped", "")
-            st.markdown(
-                f"""
-                <div class="csv-player-hero">
-                    <div>
-                        <div class="csv-player-name">{ROLE_ICON.get(role,'🏏')} {current['player_name']}</div>
-                        <div class="csv-player-meta">{current.get('country','')} &nbsp;·&nbsp; Age {current.get('age','-')} &nbsp;·&nbsp; {role.title()}
-                        {" · " + current.get('bowling_style','').title() if current.get('bowling_style') not in (None, 'na') else ""}</div>
-                        <div style="margin-top:14px">{overseas_tag} &nbsp; {capped_tag}</div>
-                    </div>
-                    {avatar_circle(current['player_name'], ROLE_COLOR.get(role, "#f0b429"), size=104)}
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-
-            m1, m2, m3 = st.columns(3)
-            m1.markdown(metric_card("Base price", fmt_cr(base_cr)), unsafe_allow_html=True)
-
-            bat_row, bowl_row = find_profile_row(current["player_name"], batter_df, bowler_df)
-            if bat_row:
-                m2.markdown(metric_card("Recent strike rate", f"{safe_num(bat_row.get('recent_strike_rate')):.1f}", f"{int(safe_num(bat_row.get('recent_innings')))} recent innings", "gold"), unsafe_allow_html=True)
-            elif bowl_row:
-                m2.markdown(metric_card("Recent economy", f"{safe_num(bowl_row.get('recent_economy')):.2f}", f"{int(safe_num(bowl_row.get('recent_innings')))} recent innings", "gold"), unsafe_allow_html=True)
-            else:
-                m2.markdown(metric_card("Form data", "N/A", "No qualifying recent innings in our KPI tables"), unsafe_allow_html=True)
-
-            if bowl_row and bowl_row.get("bowler_type"):
-                m3.markdown(metric_card("Role read", bowl_row["bowler_type"].title(), "from percentile ranks", "blue"), unsafe_allow_html=True)
-            elif bat_row and bat_row.get("usual_batting_position"):
-                m3.markdown(metric_card("Usual batting slot", f"#{int(bat_row['usual_batting_position'])}", "derived from crease-arrival order"), unsafe_allow_html=True)
-            else:
-                m3.markdown(metric_card("Source", "BCCI shortlist", "Dec 2025 auction pool"), unsafe_allow_html=True)
-
-            if bat_row:
-                st.plotly_chart(charts.batting_phase_radar(bat_row), use_container_width=True, config={"displayModeBar": False})
-            elif bowl_row:
-                st.plotly_chart(charts.bowling_phase_bars(bowl_row), use_container_width=True, config={"displayModeBar": False})
-
-            if st.button("🤖 Ask CricSavant to assess this player", key="ask_auction", use_container_width=True):
-                answer, trace = run_agent_turn(f"Give me a quick scouting take on {current['player_name']} -- recent form and any notable news.")
-                render_inline_answer(answer, trace)
-
-        with right:
-            st.markdown("#### Place a bid")
-            franchise_names = cached_franchises()["name"].tolist() if not cached_franchises().empty else []
-            default_fidx = franchise_names.index(st.session_state.active_franchise) if st.session_state.active_franchise in franchise_names else 0
-            bid_franchise = st.selectbox("Franchise", franchise_names, index=default_fidx, key="bid_franchise")
-            bid_price = st.number_input("Bid amount (crore)", min_value=0.0, value=round(base_cr, 2), step=0.25, key="bid_price")
-
-            if st.button("🔨 Place bid", type="primary", use_container_width=True):
-                result = lakebase.execute_player_bid(bid_franchise, current["player_name"], float(bid_price))
-                invalidate_after_bid()
-                if result["success"]:
-                    st.toast(f"SOLD! {current['player_name']} to {bid_franchise} for {fmt_cr(bid_price)}.", icon="✅")
-                    st.session_state.auction_idx = st.session_state.auction_idx % max(len(cached_unowned()), 1)
-                    st.rerun()
-                else:
-                    st.error(result["reason"])
-
-            st.markdown("#### 📡 Live bid feed")
-            feed = lakebase.recent_activity(limit=8)
-            feed = feed[feed["tool_name"] == "execute_player_bid"] if not feed.empty else feed
-            if feed.empty:
-                st.caption("No bids placed yet this session.")
-            else:
-                for _, r in feed.iterrows():
-                    ok = r["result_status"] == "success"
-                    icon = "✅" if ok else "🚫"
-                    payload = parse_payload(r["payload"])
-                    p_name = payload.get("player_name", "?")
-                    p_price = payload.get("price_cr", "?")
-                    ts = pd.to_datetime(r["created_at"]).strftime("%H:%M:%S") if pd.notna(r["created_at"]) else ""
-                    st.markdown(
-                        f'<div class="csv-feed-row"><span>{icon} <b>{r.get("franchise_name") or "-"}</b> → {p_name}'
-                        f' @ {fmt_cr(p_price) if isinstance(p_price,(int,float)) else p_price}</span>'
-                        f'<span style="color:#8b93ab">{ts}</span></div>',
-                        unsafe_allow_html=True,
-                    )
-
-# ================================================================ #
-# TAB 2 -- Player Explorer
-# ================================================================ #
-with tab_explorer:
-    if "player_universe" not in st.session_state:
-        st.session_state.player_universe = build_player_universe(batter_df, bowler_df, cached_player_pool())
-    universe_df = st.session_state.player_universe
-
-    st.caption(
-        f"{len(universe_df):,} players total -- every player with real form data in the Lakehouse, "
-        f"plus the {len(cached_player_pool()):,}-player current auction shortlist. Search works across all of them."
+with st.sidebar:
+    st.markdown(
+        '<div style="display:flex;align-items:center;gap:12px;padding:4px 0 14px">'
+        '<span style="font-size:30px">🏏</span>'
+        '<div><div style="font-family:Space Grotesk,sans-serif;font-weight:800;font-size:21px;color:#0f172a">CricSavant AI</div>'
+        '<div style="color:#526078;font-size:11.5px;text-transform:uppercase;letter-spacing:0.07em;font-weight:700">Franchise Strategy Platform</div></div></div>',
+        unsafe_allow_html=True,
     )
+franchise_picker()
 
-    fcol1, fcol2, fcol3, fcol4 = st.columns([2, 1, 1, 1])
-    search = fcol1.text_input("Search player", placeholder="e.g. Rashid, Bumrah, Conway...")
-    role_filter = fcol2.selectbox("Role", ["All", "batter", "bowler", "all-rounder", "wicketkeeper"])
-    pool_filter = fcol3.selectbox("Scope", ["All players", "In current auction only"])
-    overseas_filter = fcol4.selectbox("Origin", ["All", "Overseas", "Domestic"])
-
-    filtered = universe_df.copy()
-    if search:
-        filtered = filtered[filtered["player_name"].str.contains(search, case=False, na=False)]
-    if role_filter != "All":
-        filtered = filtered[filtered["role"] == role_filter]
-    if pool_filter == "In current auction only":
-        filtered = filtered[filtered["in_pool"]]
-    if overseas_filter != "All":
-        filtered = filtered[filtered["is_overseas"] == (overseas_filter == "Overseas")]
-
-    list_col, detail_col = st.columns([1, 1.6])
-    with list_col:
-        st.caption(f"{len(filtered)} matching players")
-        display_df = filtered.copy()
-        # No emoji here -- st.dataframe is a canvas-rendered grid
-        # (glide-data-grid), not HTML, and it doesn't reliably paint
-        # emoji glyphs. Confirmed live: the hammer emoji rendered as a
-        # broken "^" tofu character in this exact column.
-        display_df["In auction"] = display_df["in_pool"].map({True: "Yes", False: "—"})
-        display_df["Base price"] = display_df["base_price_lakh"].apply(
-            lambda v: f"₹{v/100:.2f}cr" if pd.notna(v) else "—"
-        )
-        st.dataframe(
-            display_df[["player_name", "role", "In auction", "Base price"]]
-            .rename(columns={"player_name": "Player", "role": "Role"}),
-            use_container_width=True, height=420, hide_index=True,
-        )
-        selected_name = st.selectbox(
-            "Inspect player", filtered["player_name"].tolist() if not filtered.empty else [],
-        )
-
-    with detail_col:
-        if selected_name:
-            bat_row, bowl_row = find_profile_row(selected_name, batter_df, bowler_df)
-            pool_info = filtered[filtered["player_name"] == selected_name].iloc[0].to_dict()
-
-            name_col, avatar_col = st.columns([5, 1])
-            name_col.markdown(f"### {ROLE_ICON.get(pool_info.get('role'),'🏏')} {selected_name}")
-            avatar_col.markdown(
-                avatar_circle(selected_name, ROLE_COLOR.get(pool_info.get("role"), "#f0b429"), size=64),
-                unsafe_allow_html=True,
-            )
-            if pool_info.get("in_pool"):
-                badges = pill(f"🔨 In current auction · base {fmt_cr(pool_info['base_price_lakh']/100)}", "gold")
-                if pool_info.get("country"):
-                    badges += "&nbsp;" + pill(pool_info["country"], "")
-                st.markdown(badges, unsafe_allow_html=True)
-            else:
-                st.markdown(pill("Not in this auction's shortlist -- already contracted or a historical player", "blue"), unsafe_allow_html=True)
-
-            if not bat_row and not bowl_row:
-                st.info("No qualifying recent-form data for this player in the KPI tables yet (thin sample across the 9 ingested competitions, 2008-2025).")
-
-            if bat_row:
-                c1, c2, c3, c4 = st.columns(4)
-                c1.markdown(metric_card("Recent SR", f"{safe_num(bat_row.get('recent_strike_rate')):.1f}", tone="gold"), unsafe_allow_html=True)
-                c2.markdown(metric_card("Recent avg", f"{safe_num(bat_row.get('recent_average')):.1f}"), unsafe_allow_html=True)
-                c3.markdown(metric_card("Career runs", f"{int(safe_num(bat_row.get('career_runs'))):,}"), unsafe_allow_html=True)
-                c4.markdown(metric_card("Boundary %", f"{safe_num(bat_row.get('recent_boundary_pct')):.1f}%"), unsafe_allow_html=True)
-                st.plotly_chart(charts.batting_phase_radar(bat_row), use_container_width=True, config={"displayModeBar": False})
-                st.plotly_chart(
-                    charts.recent_vs_career_bar(bat_row, "recent_strike_rate", "career_strike_rate", "Strike rate"),
-                    use_container_width=True, config={"displayModeBar": False},
-                )
-
-            if bowl_row:
-                c1, c2, c3, c4 = st.columns(4)
-                c1.markdown(metric_card("Recent economy", f"{safe_num(bowl_row.get('recent_economy')):.2f}", tone="gold"), unsafe_allow_html=True)
-                c2.markdown(metric_card("Recent wickets", f"{int(safe_num(bowl_row.get('recent_wickets')))}"), unsafe_allow_html=True)
-                c3.markdown(metric_card("Career wickets", f"{int(safe_num(bowl_row.get('career_wickets')))}"), unsafe_allow_html=True)
-                bowler_type_val = bowl_row.get('bowler_type')
-                bowler_type_val = bowler_type_val if isinstance(bowler_type_val, str) and bowler_type_val else 'n/a'
-                c4.markdown(metric_card("Role read", bowler_type_val.title()), unsafe_allow_html=True)
-                st.plotly_chart(charts.bowling_phase_bars(bowl_row), use_container_width=True, config={"displayModeBar": False})
-                st.plotly_chart(
-                    charts.bowler_role_scatter(bowler_df, highlight_name=selected_name),
-                    use_container_width=True, config={"displayModeBar": False},
-                )
-
-            bc1, bc2 = st.columns(2)
-            ask_clicked = bc1.button("🤖 Ask CricSavant about this player", key="ask_explorer", use_container_width=True)
-            news_clicked = bc2.button("📰 Latest news", key="news_explorer", use_container_width=True)
-            if ask_clicked:
-                answer, trace = run_agent_turn(f"Tell me about {selected_name}'s current form -- is this a good auction pick and why?")
-                render_inline_answer(answer, trace)
-            if news_clicked:
-                answer, trace = run_agent_turn(f"Any recent news on {selected_name}?")
-                render_inline_answer(answer, trace)
-
-# ================================================================ #
-# TAB 3 -- My Franchise
-# ================================================================ #
-with tab_franchise:
-    franchises_df = cached_franchises()
-    if franchises_df.empty:
-        st.warning("No franchises found.")
-    else:
-        names = franchises_df["name"].tolist()
-        default_idx = names.index(st.session_state.active_franchise) if st.session_state.active_franchise in names else 0
-        chosen = st.selectbox("Franchise", names, index=default_idx, key="franchise_tab_select")
-        st.session_state.active_franchise = chosen
-
-        status = lakebase.get_franchise_status(chosen, log=False)
-        if not status["found"]:
-            st.error("Franchise not found.")
-        else:
-            f = status["franchise"]
-            total = float(f["purse_total_cr"])
-            remaining = float(f["purse_remaining_cr"])
-            spent = total - remaining
-            roster = pd.DataFrame(status["roster"])
-
-            color = FRANCHISE_COLORS.get(chosen, "#e8b84b")
-            st.markdown(
-                f"""<div class="csv-player-hero" style="border-left:4px solid {color}">
-                <div>
-                    <div class="csv-player-name">{FRANCHISE_SHORT.get(chosen, chosen)} <span style="font-size:20px;color:#8b93ab;font-weight:500">-- {chosen}</span></div>
-                    <div class="csv-player-meta">{f.get('owner_label','')}</div>
-                </div>
-                {franchise_crest(chosen, FRANCHISE_SHORT.get(chosen, ""), color, size=88)}
-                </div>""",
-                unsafe_allow_html=True,
-            )
-
-            m1, m2, m3 = st.columns(3)
-            m1.markdown(metric_card("Purse remaining", fmt_cr(remaining), f"of {fmt_cr(total)}", "green"), unsafe_allow_html=True)
-            squad_over_cap = status['squad_size'] > f['max_squad_size']
-            m2.markdown(metric_card(
-                "Squad size", f"{status['squad_size']} / {f['max_squad_size']}",
-                "over the 2027 auction cap -- release decisions needed" if squad_over_cap else "",
-                tone="red" if squad_over_cap else "",
-            ), unsafe_allow_html=True)
-            m3.markdown(metric_card("Overseas", f"{status['overseas_count']} / {f['max_overseas']}", tone="blue" if status['overseas_count'] < f['max_overseas'] else "red"), unsafe_allow_html=True)
-
-            chart_l, chart_r = st.columns(2)
-            with chart_l:
-                st.plotly_chart(charts.purse_gauge(spent, total), use_container_width=True, config={"displayModeBar": False})
-            with chart_r:
-                st.plotly_chart(charts.squad_role_pie(roster), use_container_width=True, config={"displayModeBar": False})
-
-            st.markdown("#### Roster")
-            if roster.empty:
-                st.markdown(
-                    '<div class="csv-card" style="text-align:center;color:#8b93ab">'
-                    "No players acquired yet for this franchise.<br>"
-                    "Run <code>notebooks/014_seed_real_squads.py</code> to load the real current squad, "
-                    "or head to the <b>🔨 Live Auction Console</b> tab to build one from scratch."
-                    "</div>",
-                    unsafe_allow_html=True,
-                )
-            else:
-                roster_display = roster[["player_name", "role", "is_overseas", "acquisition_type", "price_cr", "acquired_at"]].copy()
-                # "imported" rows all share one raw timestamp -- the
-                # moment notebooks/014_seed_real_squads.py was run, not
-                # a real acquisition date -- so printing it to the
-                # microsecond ("2026-08-09T21:44:02.115787+00:00") reads
-                # as a data-quality glitch, not a real "when." Show the
-                # actual date only for genuine auction-console bids,
-                # where it's a real event worth timestamping.
-                acquired_dt = pd.to_datetime(roster_display["acquired_at"], errors="coerce")
-                roster_display["Acquired"] = acquired_dt.dt.strftime("%b %d, %Y")
-                roster_display.loc[roster_display["acquisition_type"] == "imported", "Acquired"] = "Retained / pre-season"
-                roster_display["_sort"] = acquired_dt
-                st.dataframe(
-                    roster_display[["player_name", "role", "is_overseas", "acquisition_type", "price_cr", "Acquired", "_sort"]]
-                    .rename(columns={"player_name": "Player", "role": "Role", "is_overseas": "Overseas",
-                                      "acquisition_type": "Type", "price_cr": "Price (cr)"})
-                    .sort_values("_sort", ascending=False)
-                    .drop(columns="_sort"),
-                    use_container_width=True, hide_index=True,
-                )
-                st.caption(
-                    "**imported** rows are this team's real IPL 2026 squad (retained + Dec 2025 auction, "
-                    "cited in notebooks/014_seed_real_squads.py) -- price not individually tracked for "
-                    "these, see that file's header. **auction** rows are bids placed through this app's "
-                    "own practice Auction Console."
-                )
-
-            # ---- Squad & Venue Fit: the retain/release intelligence ----
-            st.markdown("#### 🎯 Squad & Venue Fit")
-            home_venue = lakebase.get_home_venue(chosen)
-            if home_venue:
-                st.caption(
-                    f"Real home venue: **{home_venue}**. Each player's overall recent form vs. their "
-                    "record specifically at this ground (min. 60 balls faced/bowled there to qualify -- "
-                    "'no qualifying sample' is a real, meaningful data point, not a gap to ignore)."
-                )
-            else:
-                st.caption("Home venue not set for this franchise -- run sql/007_add_home_venue.sql.")
-
-            if roster.empty:
-                st.caption("No roster to analyze yet.")
-            else:
-                fit_rows = []
-                for _, prow in roster.iterrows():
-                    pname = prow["player_name"]
-                    role = (prow.get("role") or "").lower()
-                    bat_row, bowl_row = find_profile_row(pname, batter_df, bowler_df)
-                    venue_bat, venue_bowl = lakehouse.venue_form_for_player(pname, chosen)
-
-                    # A specialist bowler's headline number has to be their
-                    # economy, not a stray batting strike rate from a
-                    # handful of tail-end deliveries -- "if bat_row" alone
-                    # was picking batting SR for pure bowlers (Rahul Chahar,
-                    # Akeal Hosein, Matt Henry all showed "Bat SR" here),
-                    # which is a wrong read for a retain/release decision.
-                    bowler_first = role == "bowler" and bowl_row
-
-                    if bowler_first:
-                        recent_label = f"Bowl econ {safe_num(bowl_row.get('recent_economy')):.1f}"
-                    elif bat_row:
-                        recent_label = f"Bat SR {safe_num(bat_row.get('recent_strike_rate')):.0f}"
-                    elif bowl_row:
-                        recent_label = f"Bowl econ {safe_num(bowl_row.get('recent_economy')):.1f}"
-                    else:
-                        recent_label = "no Cricsheet sample"
-
-                    if bowler_first and venue_bowl:
-                        venue_label = f"Bowl econ {safe_num(venue_bowl.get('economy')):.1f} ({int(safe_num(venue_bowl.get('innings')))} inns here)"
-                    elif venue_bat:
-                        venue_label = f"Bat SR {safe_num(venue_bat.get('strike_rate')):.0f} ({int(safe_num(venue_bat.get('innings')))} inns here)"
-                    elif venue_bowl:
-                        venue_label = f"Bowl econ {safe_num(venue_bowl.get('economy')):.1f} ({int(safe_num(venue_bowl.get('innings')))} inns here)"
-                    else:
-                        venue_label = "no qualifying sample here"
-
-                    fit_rows.append({
-                        "Player": pname, "Role": prow["role"],
-                        "Recent form (all venues)": recent_label,
-                        "Form at home venue": venue_label,
-                    })
-                st.dataframe(pd.DataFrame(fit_rows), use_container_width=True, hide_index=True, height=360)
-
-                if st.button("🤖 Get AI retention recommendations for this squad", key="ask_retention", use_container_width=True):
-                    answer, trace = run_agent_turn(
-                        f"Based on real recent form and home-venue fit, which players on {chosen}'s "
-                        "current roster look like strong retains ahead of the next auction, and which "
-                        "look like release candidates? Be specific, cite the actual numbers, and call "
-                        "out anyone you don't have enough data to judge rather than guessing."
-                    )
-                    render_inline_answer(answer, trace)
-
-# ================================================================ #
-# TAB 4 -- Analytics  (Lakebase change_log -> Delta CDF sync, made visible)
-# ================================================================ #
-with tab_analytics:
-    live_log = lakebase.all_change_log()
-    synced_log = lakehouse.get_change_log_history()
-
-    sync_l, sync_r = st.columns([3, 1])
-    with sync_l:
-        st.markdown("#### Lakebase → Delta CDF sync")
-        st.caption(
-            "`change_log` (Lakebase, live) is periodically synced into `cricsavant.ops.lb_change_log_history` "
-            "(Unity Catalog Delta table) by `001_sync_change_log_to_delta.py` -- our Free-Edition stand-in for "
-            "native Lakebase CDF. Everything below is live from Lakebase so this tab is always current; this "
-            "strip is the proof the sync mechanism itself works."
-        )
-    with sync_r:
-        lag = max(len(live_log) - len(synced_log), 0)
-        st.markdown(metric_card("Synced to Delta", f"{len(synced_log)} / {len(live_log)}", "events" if lag == 0 else f"{lag} pending sync", "green" if lag == 0 else "gold"), unsafe_allow_html=True)
-
-    st.divider()
-
-    if live_log.empty:
-        st.info("No agent or bid activity recorded yet -- place a bid or ask the chat agent a question to populate this tab.")
-    else:
-        total_events = len(live_log)
-        bids = live_log[live_log["tool_name"] == "execute_player_bid"]
-        success_bids = (bids["result_status"] == "success").sum() if not bids.empty else 0
-        blocked_bids = bids["result_status"].astype(str).str.startswith("blocked").sum() if not bids.empty else 0
-
-        m1, m2, m3, m4 = st.columns(4)
-        m1.markdown(metric_card("Total events", f"{total_events:,}", "live from Lakebase"), unsafe_allow_html=True)
-        m2.markdown(metric_card("Bids placed", f"{len(bids)}"), unsafe_allow_html=True)
-        m3.markdown(metric_card("Bids successful", f"{success_bids}", tone="green"), unsafe_allow_html=True)
-        m4.markdown(metric_card("Blocked by guardrails", f"{blocked_bids}", "proof the validator fires", "red"), unsafe_allow_html=True)
-
-        c1, c2 = st.columns(2)
-        with c1:
-            st.plotly_chart(charts.bid_outcome_donut(live_log), use_container_width=True, config={"displayModeBar": False})
-        with c2:
-            st.plotly_chart(charts.tool_usage_bar(live_log), use_container_width=True, config={"displayModeBar": False})
-
-        st.plotly_chart(charts.activity_over_time(live_log), use_container_width=True, config={"displayModeBar": False})
-
-        if not cached_franchises().empty:
-            st.plotly_chart(charts.spend_by_franchise_bar(cached_franchises()), use_container_width=True, config={"displayModeBar": False})
-
-        with st.expander("Raw event log (live from Lakebase)"):
-            st.dataframe(live_log.sort_values("event_id", ascending=False), use_container_width=True, hide_index=True)
-
-        if not synced_log.empty:
-            with st.expander("Raw event log (as synced into ops.lb_change_log_history)"):
-                st.dataframe(synced_log.sort_values("event_id", ascending=False), use_container_width=True, hide_index=True)
+nav = st.navigation([
+    st.Page(page_strategy, title="Strategy Center", icon="🏟️", default=True),
+    st.Page(page_players, title="Players", icon="🔍"),
+    st.Page(page_analytics, title="League Analytics", icon="📊"),
+    st.Page(page_chat, title="AI Analyst", icon="💬"),
+])
+nav.run()

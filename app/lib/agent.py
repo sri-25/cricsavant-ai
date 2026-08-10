@@ -27,7 +27,16 @@ from openai import OpenAI
 from lib import lakebase, lakehouse
 from lib.vector_search import search_player_news as _vs_search_player_news
 
-AGENT_MODEL_DEFAULT = "databricks-meta-llama-3-3-70b-instruct"
+# Switched from Llama 3.3 70B by user decision after its strategy
+# answers came back shallow. Claude Sonnet isn't offered on Free
+# Edition's FMAPI (confirmed from the workspace's own endpoint list),
+# so gpt-oss-120b -- OpenAI's open-weight reasoning model, the
+# strongest tool-caller Free Edition serves -- is the pick. Multi-step
+# reasoning over 25-player squads + venue splits + purse math is
+# exactly where the model gap vs Llama 3.3 shows. The live endpoint
+# comes from the CHAT_MODEL_ENDPOINT app resource (App Edit screen);
+# this is only the fallback default.
+AGENT_MODEL_DEFAULT = "databricks-gpt-oss-120b"
 
 _client = None
 _cfg = None
@@ -95,8 +104,87 @@ def get_franchise_status(franchise_name: str) -> dict:
     return lakebase.get_franchise_status(franchise_name, log=True)
 
 
-def execute_player_bid(franchise_name: str, player_name: str, price_cr: float) -> dict:
-    return lakebase.execute_player_bid(franchise_name, player_name, price_cr)
+# ---- Auction targets: who's actually available + in what form. ----
+
+def get_auction_targets(role: str = None, overseas: bool = None, max_results: int = 12) -> dict:
+    """Players in the current auction pool NOT already on any roster,
+    joined with their real recent form -- the raw material for "who
+    should we sign" recommendations. Filter by role and overseas
+    status; returns real numbers only, no pre-computed verdicts.
+    """
+    pool = lakebase.list_unowned_players()
+    if pool.empty:
+        return {"found": False, "note": "No unowned players left in the auction pool."}
+
+    if role:
+        pool = pool[pool["role"].str.lower() == role.strip().lower()]
+    if overseas is not None:
+        pool = pool[pool["is_overseas"] == overseas]
+    if pool.empty:
+        return {"found": False, "note": f"No available players match role={role}, overseas={overseas}."}
+
+    batter_df = lakehouse.get_batter_profiles()
+    bowler_df = lakehouse.get_bowler_profiles()
+
+    candidates = []
+    for _, p in pool.iterrows():
+        entry = {
+            "player_name": p["player_name"], "role": p["role"], "country": p["country"],
+            "age": p["age"], "is_overseas": bool(p["is_overseas"]),
+            "capped_status": p["capped_status"],
+            "base_price_cr": float(p["base_price_lakh"]) / 100.0 if p["base_price_lakh"] is not None else None,
+            "recent_batting": None, "recent_bowling": None,
+        }
+        bat = lakehouse.match_gold_row(p["player_name"], batter_df)
+        bowl = lakehouse.match_gold_row(p["player_name"], bowler_df)
+        if bat is not None:
+            b = bat.to_dict()
+            entry["recent_batting"] = {
+                "innings": b.get("recent_innings"), "strike_rate": b.get("recent_strike_rate"),
+                "average": b.get("recent_average"),
+            }
+        if bowl is not None:
+            b = bowl.to_dict()
+            entry["recent_bowling"] = {
+                "innings": b.get("recent_innings"), "economy": b.get("recent_economy"),
+                "wickets": b.get("recent_wickets"), "bowler_type": b.get("bowler_type"),
+            }
+        candidates.append(entry)
+
+    # Players with real form data first -- an uncapped unknown with no
+    # Cricsheet history is still listed, but after measurable options.
+    candidates.sort(key=lambda c: (c["recent_batting"] is None and c["recent_bowling"] is None))
+    candidates = candidates[: max(1, min(int(max_results), 25))]
+
+    lakebase.log_agent_tool_call(
+        "get_auction_targets", "player_pool", None,
+        {"role": role, "overseas": overseas, "returned": len(candidates)}, "found",
+    )
+    return {
+        "found": True, "candidate_count": len(candidates),
+        "note": (
+            "All candidates are in the current auction pool and not on any roster. "
+            "recent_batting/recent_bowling are ~18-month cross-format T20 form; null means no "
+            "qualifying Cricsheet sample (common for uncapped players), which is a risk signal "
+            "to state, not proof of weakness. Base prices are real BCCI shortlist figures."
+        ),
+        "candidates": candidates,
+    }
+
+
+# ---- Strategy notes: the agent's WRITE tool (replaces bids). ------
+
+def save_strategy_note(franchise_name: str, note_type: str, content: str) -> dict:
+    result = lakebase.save_strategy_note(franchise_name, note_type, content, created_by="agent")
+    return result
+
+
+def list_strategy_notes(franchise_name: str = None) -> dict:
+    df = lakebase.list_strategy_notes(franchise_name)
+    notes = df.to_dict("records") if not df.empty else []
+    for n in notes:
+        n["created_at"] = str(n.get("created_at"))
+    return {"found": bool(notes), "count": len(notes), "notes": notes}
 
 
 # ---- Tool 5 (retrieval): venue-aware retain/release signal. ----
@@ -196,8 +284,10 @@ _TOOL_FUNCTIONS = {
     "get_player_form_profile": get_player_form_profile,
     "search_player_news": search_player_news,
     "get_franchise_status": get_franchise_status,
-    "execute_player_bid": execute_player_bid,
     "get_squad_retention_analysis": get_squad_retention_analysis,
+    "get_auction_targets": get_auction_targets,
+    "save_strategy_note": save_strategy_note,
+    "list_strategy_notes": list_strategy_notes,
 }
 
 TOOLS_SCHEMA = [
@@ -260,23 +350,58 @@ TOOLS_SCHEMA = [
     {
         "type": "function",
         "function": {
-            "name": "execute_player_bid",
+            "name": "get_auction_targets",
             "description": (
-                "Attempt to acquire a player for a franchise at a given price. This is a REAL, "
-                "WRITE action with real consequences for the franchise's purse -- only call it "
-                "when the user has explicitly asked to place this specific bid (franchise + "
-                "player + price all given), never speculatively. Returns success or a specific "
-                "reason for rejection (already owned, insufficient purse, squad full, overseas "
-                "cap exceeded, below base price)."
+                "List players available in the current auction pool (not on any roster) with "
+                "their real recent form and base prices. Use when recommending signings, "
+                "filling squad gaps, or building an auction shortlist. Filter by role and/or "
+                "overseas status to target a specific need."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "role": {"type": "string", "description": "Optional: 'batter', 'bowler', 'all-rounder', or 'wicketkeeper'."},
+                    "overseas": {"type": "boolean", "description": "Optional: true = overseas players only, false = domestic only."},
+                    "max_results": {"type": "integer", "description": "Max candidates to return (default 12)."},
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "save_strategy_note",
+            "description": (
+                "Save a strategy artifact (retention plan, auction-target shortlist, simulated "
+                "playing XI, scouting note) to the franchise's permanent strategy notebook. "
+                "This is a WRITE action -- call it when the user asks to save/keep a plan, or "
+                "after producing a substantial recommendation the user confirms they want kept. "
+                "note_type must be one of: retention_plan, auction_targets, playing_xi, "
+                "scouting, general."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "franchise_name": {"type": "string"},
-                    "player_name": {"type": "string"},
-                    "price_cr": {"type": "number", "description": "Bid amount in crore rupees."},
+                    "note_type": {"type": "string", "enum": ["retention_plan", "auction_targets", "playing_xi", "scouting", "general"]},
+                    "content": {"type": "string", "description": "The full note text to save."},
                 },
-                "required": ["franchise_name", "player_name", "price_cr"],
+                "required": ["franchise_name", "note_type", "content"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_strategy_notes",
+            "description": "List previously saved strategy notes, optionally filtered to one franchise. Use when the user asks what plans/notes already exist.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "franchise_name": {"type": "string", "description": "Optional franchise filter."}
+                },
+                "required": [],
             },
         },
     },
@@ -304,20 +429,26 @@ TOOLS_SCHEMA = [
     },
 ]
 
-SYSTEM_PROMPT = """You are CricSavant AI, an auction-companion assistant for an IPL fantasy-franchise auction app.
+SYSTEM_PROMPT = """You are CricSavant AI, a franchise strategy analyst for IPL team management. Your job is to help each franchise take control of their strategy: whom to retain or release, whom to target at the next auction, what their strongest playing XI looks like, and where their squad is weak -- always grounded in the real data your tools return.
 
 GROUNDING RULES (never violate these):
 1. Never state a specific statistic, price, or franchise status from memory or estimation -- always call the relevant tool first.
-2. If get_player_form_profile returns more than one match, that means a genuine name collision or ambiguity (there can be two real players with similar names). Ask the user to clarify which player they mean rather than picking one yourself.
+2. If get_player_form_profile returns more than one match, that means a genuine name collision or ambiguity. Ask the user to clarify which player they mean rather than picking one yourself.
 3. When you use information from search_player_news, always include the source URL.
-4. execute_player_bid is a real write action with real consequences for a franchise's purse. Only call it when the user has clearly specified a franchise, a player, and a price and asked you to place that bid -- do not call it speculatively or "to see what happens".
-5. If a tool call fails, returns found=False, or a bid is blocked, say so plainly and explain why using the tool's own reason -- never fill the gap with a guess.
-6. For retain/release or squad-gap questions, use get_squad_retention_analysis. recent_form and home_venue_form can each contain a "batting" block, a "bowling" block, or both (all-rounders) -- weigh the block that matches the player's actual role (a bowler's economy/wickets matter more than a few tail-end deliveries faced) rather than defaulting to whichever appears first. When a block is missing/null, say so explicitly ("no qualifying home-venue sample") rather than treating it as evidence they're weak there. A retain/release read is your judgment call to make and explain, grounded in the real figures -- the tool deliberately doesn't hand you a pre-computed verdict.
-7. Keep answers concise (2-5 sentences unless the user asks for detail) and grounded strictly in what the tools returned.
+4. If a tool call fails or returns found=False, say so plainly using the tool's own reason -- never fill the gap with a guess.
+5. For retain/release or squad-gap questions, use get_squad_retention_analysis. recent_form and home_venue_form can each contain a "batting" block, a "bowling" block, or both (all-rounders) -- weigh the block matching the player's actual role. When a block is null, say "no qualifying sample" rather than treating it as weakness.
+6. For signing recommendations, use get_auction_targets and respect the franchise's real constraints from get_franchise_status: purse remaining, squad cap, overseas cap. Never recommend a signing the purse can't afford; state the base price and remaining purse when you recommend.
+7. save_strategy_note is a WRITE action -- use it when the user asks to save a plan, choosing the right note_type. Confirm what was saved.
+
+STRATEGY TASKS (how to do the deep work):
+- RETENTION PLAN: call get_squad_retention_analysis, group the squad into clear retain / release / borderline lists with the actual numbers beside each name, and tie releases to purse freed and gaps opened.
+- AUCTION PLAN: first understand the squad's gaps (retention analysis), then get_auction_targets filtered to those gaps, then recommend specific names with base price vs purse math.
+- PLAYING XI SIMULATION: from the real roster (get_squad_retention_analysis), pick an XI: openers, middle order, finishers, wicketkeeper, 4-5 bowling options, max 4 overseas (that's the real match-day rule -- distinct from the squad's overseas cap). Name an Impact Player substitute (typically a specialist batter swapped for a bowler or vice versa depending on innings). Justify each slot with the player's actual numbers, use home_venue_form for conditions-fit, and flag any slot where data is thin instead of bluffing confidence.
+- Format strategy answers with short headers and bullet lists with numbers; keep casual questions to 2-4 sentences.
 """
 
 
-def run_agent(user_message: str, messages: list = None, max_turns: int = 6):
+def run_agent(user_message: str, messages: list = None, max_turns: int = 8):
     """Runs one user turn through the tool-calling loop.
 
     Returns (answer, updated_messages, trace) -- trace is a list of
@@ -339,6 +470,7 @@ def run_agent(user_message: str, messages: list = None, max_turns: int = 6):
             messages=messages,
             tools=TOOLS_SCHEMA,
             tool_choice="auto",
+            max_tokens=4000,  # explicit for FMAPI; gpt-oss spends some of this on reasoning tokens, XI sims need room
         )
         choice = response.choices[0]
         messages.append(choice.message.model_dump(exclude_none=True))

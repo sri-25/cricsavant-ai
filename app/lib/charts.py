@@ -141,7 +141,7 @@ def purse_gauge(spent: float, total: float) -> go.Figure:
     remaining = max(total - spent, 0)
     fig = go.Figure(go.Pie(
         values=[spent, remaining] if total else [0, 1], hole=0.72,
-        marker=dict(colors=[GOLD, "rgba(255,255,255,0.06)"]),
+        marker=dict(colors=[GOLD, "rgba(15,23,42,0.08)"]),  # light-theme track color
         textinfo="none", sort=False, direction="clockwise",
     ))
     pct = (spent / total * 100) if total else 0

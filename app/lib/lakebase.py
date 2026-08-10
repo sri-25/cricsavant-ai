@@ -204,6 +204,83 @@ def get_franchise_status(franchise_name: str, log: bool = True) -> dict:
         conn.close()
 
 
+# ---- Strategy notes: the agent's write surface after the auction
+# console was dropped (product pivot to franchise strategy -- see
+# sql/008_strategy_notes.sql). Append-only for the app role. ---------
+
+def save_strategy_note(franchise_name: str, note_type: str, content: str, created_by: str = "agent") -> dict:
+    valid_types = {"retention_plan", "auction_targets", "playing_xi", "scouting", "general"}
+    if note_type not in valid_types:
+        note_type = "general"
+    if not content or not content.strip():
+        return {"success": False, "reason": "Empty note content."}
+
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        fid = None
+        if franchise_name:
+            cur.execute("SELECT franchise_id FROM franchises WHERE lower(name) = lower(%s)", (franchise_name,))
+            row = cur.fetchone()
+            if not row:
+                return {"success": False, "reason": f"No franchise found matching '{franchise_name}'."}
+            fid = row[0]
+        cur.execute(
+            "INSERT INTO strategy_notes (franchise_id, note_type, content, created_by) "
+            "VALUES (%s, %s, %s, %s) RETURNING note_id",
+            (fid, note_type, content.strip(), created_by),
+        )
+        note_id = cur.fetchone()[0]
+        cur.execute(
+            "INSERT INTO change_log (event_type, table_name, tool_name, franchise_id, payload, result_status) "
+            "VALUES ('data_change', 'strategy_notes', 'save_strategy_note', %s, %s, 'success')",
+            (fid, json.dumps({"note_id": note_id, "note_type": note_type, "chars": len(content)}), ),
+        )
+        conn.commit()
+        return {"success": True, "note_id": note_id, "note_type": note_type}
+    except Exception as e:
+        conn.rollback()
+        return {"success": False, "reason": f"Unexpected error: {str(e)[:300]}"}
+    finally:
+        cur.close()
+        conn.close()
+
+
+def list_strategy_notes(franchise_name: str = None, limit: int = 20) -> pd.DataFrame:
+    if franchise_name:
+        return query_df(
+            "SELECT n.note_id, n.note_type, n.content, n.created_by, n.created_at, f.name AS franchise_name "
+            "FROM strategy_notes n LEFT JOIN franchises f ON f.franchise_id = n.franchise_id "
+            "WHERE lower(f.name) = lower(%s) ORDER BY n.note_id DESC LIMIT %s",
+            (franchise_name, limit),
+        )
+    return query_df(
+        "SELECT n.note_id, n.note_type, n.content, n.created_by, n.created_at, f.name AS franchise_name "
+        "FROM strategy_notes n LEFT JOIN franchises f ON f.franchise_id = n.franchise_id "
+        "ORDER BY n.note_id DESC LIMIT %s",
+        (limit,),
+    )
+
+
+def league_squad_summary() -> pd.DataFrame:
+    """One row per franchise: purse + squad-size + overseas counts --
+    the League Analytics page's cross-team comparison in a single query.
+    """
+    return query_df(
+        "SELECT f.name, f.purse_total_cr, f.purse_remaining_cr, f.max_squad_size, f.max_overseas, f.home_venue, "
+        "count(r.roster_id) AS squad_size, "
+        "count(r.roster_id) FILTER (WHERE r.is_overseas) AS overseas_count, "
+        "count(r.roster_id) FILTER (WHERE r.role = 'batter') AS batters, "
+        "count(r.roster_id) FILTER (WHERE r.role = 'bowler') AS bowlers, "
+        "count(r.roster_id) FILTER (WHERE r.role = 'all-rounder') AS all_rounders, "
+        "count(r.roster_id) FILTER (WHERE r.role = 'wicketkeeper') AS wicketkeepers "
+        "FROM franchises f LEFT JOIN franchise_roster r "
+        "ON r.franchise_id = f.franchise_id AND r.status = 'active' "
+        "WHERE f.is_active GROUP BY f.franchise_id, f.name, f.purse_total_cr, f.purse_remaining_cr, "
+        "f.max_squad_size, f.max_overseas, f.home_venue ORDER BY f.name"
+    )
+
+
 def execute_player_bid(franchise_name: str, player_name: str, price_cr: float) -> dict:
     conn = get_conn()
     cur = conn.cursor()
