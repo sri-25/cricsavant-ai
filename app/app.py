@@ -146,45 +146,30 @@ def franchise_picker():
 # ================================================================ #
 # PAGE: Strategy Center
 # ================================================================ #
-def chat_panel(height: int = 460):
-    """Compact live chat, embedded beside the strategy content so the
-    AI is 'in front' on the main page -- not hidden behind a nav
-    click. Shares history with the AI Analyst page. Newest turn shown
-    first: fixed-height containers don't autoscroll, so newest-at-
-    bottom means fresh answers render invisibly below the fold.
+def league_ticker():
+    """Auto-scrolling league pulse strip -- all 10 logos + live purse
+    figures gliding across the top. The 'dynamic/carousel' energy the
+    static cards lacked, powered by real Lakebase numbers.
     """
-    st.markdown("#### 💬 Ask CricSavant")
-    box = st.container(height=height)
-    with box:
-        if not st.session_state.chat_display:
-            st.caption(
-                "Ask anything about your squad, targets, or form -- "
-                "e.g. *\"Which bowler should we release?\"* Newest answer appears at the top."
-            )
-        msgs = st.session_state.chat_display
-        turns, i = [], 0
-        while i < len(msgs):
-            if msgs[i]["role"] == "user":
-                nxt = msgs[i + 1] if i + 1 < len(msgs) and msgs[i + 1]["role"] == "assistant" else None
-                turns.append((msgs[i], nxt))
-                i += 2 if nxt else 1
-            else:
-                turns.append((None, msgs[i]))
-                i += 1
-        for user_msg, asst_msg in reversed(turns):
-            if user_msg:
-                with st.chat_message("user", avatar="🧑‍💼"):
-                    st.markdown(user_msg["content"])
-            if asst_msg:
-                with st.chat_message("assistant", avatar="🏆"):
-                    st.markdown(linkify(asst_msg["content"]))
-                    if asst_msg.get("trace"):
-                        render_trace(asst_msg["trace"])
-    prompt = st.chat_input("Ask about your squad, targets, form...", key="strategy_chat_input")
-    if prompt:
-        with st.spinner("Checking the real data..."):
-            run_agent_turn(prompt)
-        st.rerun()
+    try:
+        league = cached_league_summary()
+    except Exception:
+        return
+    if league.empty:
+        return
+    items = []
+    for _, r in league.iterrows():
+        short = FRANCHISE_SHORT.get(r["name"], r["name"])
+        items.append(
+            f'<span class="csv-ticker-item">{team_logo(r["name"], size=30, radius=8)}'
+            f'<b>{short}</b> ₹{float(r["purse_remaining_cr"]):,.2f} cr left '
+            f'· squad {int(r["squad_size"])}/{int(r["max_squad_size"])}</span>'
+        )
+    track = "".join(items)
+    st.markdown(
+        f'<div class="csv-ticker"><div class="csv-ticker-track">{track}{track}</div></div>',
+        unsafe_allow_html=True,
+    )
 
 
 def page_strategy():
@@ -203,80 +188,78 @@ def page_strategy():
     remaining = float(f["purse_remaining_cr"])
     roster = pd.DataFrame(status["roster"])
 
-    main_col, chat_col = st.columns([1.8, 1], gap="large")
+    league_ticker()
+    st.markdown(team_hero(chosen, f.get("owner_label", "")), unsafe_allow_html=True)
 
-    with chat_col:
-        chat_panel()
-
-    with main_col:
-        st.markdown(team_hero(chosen, f.get("owner_label", "")), unsafe_allow_html=True)
-
-        m1, m2 = st.columns(2)
-        m3, m4 = st.columns(2)
-        m1.markdown(metric_card("Purse remaining", fmt_cr(remaining), f"of {fmt_cr(total)}", "green"), unsafe_allow_html=True)
-        over_cap = status["squad_size"] > f["max_squad_size"]
-        m2.markdown(metric_card("Squad size", f"{status['squad_size']} / {f['max_squad_size']}",
-                                "over cap -- releases needed" if over_cap else "within cap",
-                                "red" if over_cap else ""), unsafe_allow_html=True)
-        over_os = status["overseas_count"] > f["max_overseas"]
-        m3.markdown(metric_card("Overseas", f"{status['overseas_count']} / {f['max_overseas']}",
-                                "over cap" if over_os else "slots used",
-                                "red" if over_os else "blue"), unsafe_allow_html=True)
-        role_counts = roster["role"].value_counts().to_dict() if not roster.empty else {}
-        m4.markdown(metric_card("Balance", " · ".join(f"{role_counts.get(r, 0)}{r[0].upper()}" for r in
-                                ["batter", "bowler", "all-rounder", "wicketkeeper"]),
-                                "B=bat, B=bowl, A=AR, W=WK"), unsafe_allow_html=True)
+    m1, m2, m3, m4 = st.columns(4)
+    m1.markdown(metric_card("Purse remaining", fmt_cr(remaining), f"of {fmt_cr(total)}", "green"), unsafe_allow_html=True)
+    over_cap = status["squad_size"] > f["max_squad_size"]
+    m2.markdown(metric_card("Squad size", f"{status['squad_size']} / {f['max_squad_size']}",
+                            "over cap -- releases needed" if over_cap else "within cap",
+                            "red" if over_cap else ""), unsafe_allow_html=True)
+    over_os = status["overseas_count"] > f["max_overseas"]
+    m3.markdown(metric_card("Overseas", f"{status['overseas_count']} / {f['max_overseas']}",
+                            "over cap" if over_os else "slots used",
+                            "red" if over_os else "blue"), unsafe_allow_html=True)
+    role_counts = roster["role"].value_counts().to_dict() if not roster.empty else {}
+    m4.markdown(metric_card("Balance", " · ".join(f"{role_counts.get(r, 0)}{r[0].upper()}" for r in
+                            ["batter", "bowler", "all-rounder", "wicketkeeper"]),
+                            "B=bat, B=bowl, A=AR, W=WK"), unsafe_allow_html=True)
 
     st.markdown("### 🎯 Strategy plays")
-    st.caption(
-        "Each play runs the AI through your real squad, real form data, real venue splits, and the "
-        "real auction pool -- then you can save the plan to your strategy notebook."
-    )
 
     plays = {
-        "retention": (
-            "📋 Retention & release plan",
+        "📋 Retention & release plan": (
+            "retention", "retention_plan",
             f"Build a retention and release plan for {chosen} ahead of the IPL 2027 auction. "
             "Group the squad into retain / release / borderline with the real numbers beside each name, "
             "state the purse freed by the releases, and name the gaps those releases open.",
         ),
-        "auction": (
-            "🛒 Auction plan (whom to sign)",
+        "🛒 Auction plan (whom to sign)": (
+            "auction", "auction_targets",
             f"Build {chosen}'s auction plan: first identify the squad's weakest areas from real form, "
             "then find the best available players in the auction pool for those gaps, and recommend "
             "specific signings with base price vs. our remaining purse math.",
         ),
-        "xi": (
-            "🏏 Best XI + Impact Player",
+        "🏏 Best XI + Impact Player": (
+            "xi", "playing_xi",
             f"Simulate {chosen}'s strongest playing XI for a home game: batting order, bowling options, "
             "max 4 overseas on the field, and name the Impact Player substitution. Justify each slot "
             "with the player's actual numbers and flag thin-data picks honestly.",
         ),
     }
 
-    bc1, bc2, bc3 = st.columns(3)
-    for col, (kind, (label, prompt)) in zip((bc1, bc2, bc3), plays.items()):
-        if col.button(label, key=f"play_{kind}", use_container_width=True, type="primary"):
-            with st.spinner("CricSavant is working through the real data -- deep runs take ~30-60s..."):
-                answer, trace = run_agent_turn(prompt, record_in_chat=False)
-            st.session_state.strategy_results[(chosen, kind)] = (answer, trace)
+    # One selector + ONE result slot. The old version stacked every
+    # play's output down the page, so running a second play meant
+    # scrolling past the first -- picked play now swaps in place.
+    selected_label = st.radio("Pick a play", list(plays.keys()), horizontal=True, label_visibility="collapsed")
+    kind, note_type, prompt = plays[selected_label]
 
-    note_type_for_kind = {"retention": "retention_plan", "auction": "auction_targets", "xi": "playing_xi"}
-    for kind, (label, _) in plays.items():
-        result = st.session_state.strategy_results.get((chosen, kind))
-        if result:
-            answer, trace = result
-            st.markdown(f"#### {label}")
-            with st.chat_message("assistant", avatar="🏆"):
-                st.markdown(linkify(answer))
-            render_trace(trace)
-            sc1, sc2 = st.columns([1, 4])
-            if sc1.button("💾 Save to notebook", key=f"save_{kind}"):
-                res = lakebase.save_strategy_note(chosen, note_type_for_kind[kind], answer, created_by="user")
-                if res.get("success"):
-                    st.toast(f"Saved to {chosen}'s strategy notebook.", icon="✅")
-                else:
-                    st.error(res.get("reason", "Save failed."))
+    run_col, hint_col = st.columns([1, 3])
+    run_clicked = run_col.button("▶ Run this play", type="primary", use_container_width=True)
+    has_result = (chosen, kind) in st.session_state.strategy_results
+    hint_col.caption(
+        "Runs the AI through your real squad, form, venue splits, and the live auction pool (~30-60s). "
+        + ("A previous run is shown below -- running again refreshes it." if has_result else "")
+    )
+
+    if run_clicked:
+        with st.spinner("CricSavant is working through the real data..."):
+            answer, trace = run_agent_turn(prompt, record_in_chat=False)
+        st.session_state.strategy_results[(chosen, kind)] = (answer, trace)
+
+    result = st.session_state.strategy_results.get((chosen, kind))
+    if result:
+        answer, trace = result
+        with st.chat_message("assistant", avatar="🏆"):
+            st.markdown(linkify(answer))
+        render_trace(trace)
+        if st.button("💾 Save to notebook", key=f"save_{kind}"):
+            res = lakebase.save_strategy_note(chosen, note_type, answer, created_by="user")
+            if res.get("success"):
+                st.toast(f"Saved to {chosen}'s strategy notebook.", icon="✅")
+            else:
+                st.error(res.get("reason", "Save failed."))
 
     # ---- Saved notebook ----
     st.markdown("### 📓 Strategy notebook")
@@ -451,46 +434,60 @@ def page_analytics():
 # PAGE: AI Analyst (native chat)
 # ================================================================ #
 def page_chat():
+    """Centered, Claude/ChatGPT-style chat: narrow middle column, big
+    welcome state with suggestion cards, input pinned to the bottom of
+    the viewport (top-level st.chat_input does that natively; CSS in
+    styles.py centers and width-limits it to match).
+    """
     chosen = st.session_state.active_franchise
-    st.markdown("## 💬 AI Analyst")
-    st.caption(
-        f"Talking strategy for **{chosen}**. Grounded in real stats, real news, your real roster -- "
-        "every answer shows the tool calls behind it." if chosen else "Pick a franchise in the sidebar first."
-    )
+    _, mid, _ = st.columns([1, 2.7, 1])
 
-    quick = st.columns(3)
-    quick_prompts = [
-        "Where is my squad weakest?",
-        "Any injury news on my players?",
-        "Show my saved strategy notes",
-    ]
     clicked_prompt = None
-    for col, qp in zip(quick, quick_prompts):
-        if col.button(qp, use_container_width=True):
-            clicked_prompt = qp
+    with mid:
+        if not st.session_state.chat_display:
+            welcome_mark = team_logo(chosen, size=84, radius=16) if chosen else '<span style="font-size:56px">🏏</span>'
+            st.markdown(
+                f'<div style="text-align:center;padding:60px 0 8px">{welcome_mark}</div>'
+                f'<div style="text-align:center;font-family:Space Grotesk,sans-serif;font-weight:800;'
+                f'font-size:30px;color:#111827">How can I help {FRANCHISE_SHORT.get(chosen, "your team")} today?</div>'
+                f'<div style="text-align:center;color:#3f4a5f;font-size:15px;margin:8px 0 28px">'
+                f'Real stats · live news · your actual roster -- every answer shows its tool calls</div>',
+                unsafe_allow_html=True,
+            )
+            s1, s2 = st.columns(2)
+            s3, s4 = st.columns(2)
+            suggestions = [
+                (s1, "🎯 Where is my squad weakest?"),
+                (s2, "🩹 Any injury news on my players?"),
+                (s3, "🏟️ Who fits our home ground best?"),
+                (s4, "📓 Show my saved strategy notes"),
+            ]
+            for col, sug in suggestions:
+                if col.button(sug, use_container_width=True, key=f"sug_{sug[:12]}"):
+                    clicked_prompt = sug.split(" ", 1)[1]
+        else:
+            for msg in st.session_state.chat_display:
+                avatar = "🧑‍💼" if msg["role"] == "user" else "🏆"
+                with st.chat_message(msg["role"], avatar=avatar):
+                    st.markdown(linkify(msg["content"]))
+                    if msg.get("trace"):
+                        render_trace(msg["trace"])
+            if st.button("🗑 New conversation"):
+                st.session_state.agent_messages = None
+                st.session_state.chat_display = []
+                st.rerun()
 
-    for msg in st.session_state.chat_display:
-        avatar = "🧑‍💼" if msg["role"] == "user" else "🏆"
-        with st.chat_message(msg["role"], avatar=avatar):
-            st.markdown(linkify(msg["content"]))
-            if msg.get("trace"):
-                render_trace(msg["trace"])
-
-    prompt = st.chat_input("Ask about your squad, targets, or tell me to save a plan...")
+    prompt = st.chat_input(f"Message CricSavant about {FRANCHISE_SHORT.get(chosen, 'your team')}...")
     text = prompt or clicked_prompt
     if text:
-        with st.chat_message("user", avatar="🧑‍💼"):
-            st.markdown(text)
-        with st.chat_message("assistant", avatar="🏆"):
-            with st.spinner("Checking the real data..."):
-                answer, trace = run_agent_turn(text)
-            st.markdown(linkify(answer))
-            render_trace(trace)
-
-    if st.session_state.chat_display and st.button("🗑 Clear conversation"):
-        st.session_state.agent_messages = None
-        st.session_state.chat_display = []
-        st.rerun()
+        with mid:
+            with st.chat_message("user", avatar="🧑‍💼"):
+                st.markdown(text)
+            with st.chat_message("assistant", avatar="🏆"):
+                with st.spinner("Checking the real data..."):
+                    answer, trace = run_agent_turn(text)
+                st.markdown(linkify(answer))
+                render_trace(trace)
 
 
 # ================================================================ #

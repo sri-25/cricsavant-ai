@@ -311,6 +311,47 @@ def inject_css():
         div[data-testid="stChatInput"] textarea {{ font-size: 15px !important; color: {TEXT} !important; }}
         div[data-testid="stChatInput"] {{ border-radius: 12px; }}
 
+        /* Chat input: centered + width-limited, Claude/ChatGPT style */
+        div[data-testid="stChatInput"] {{
+            max-width: 860px;
+            margin: 0 auto;
+            border: 1.5px solid {BORDER_STRONG};
+            border-radius: 14px;
+            box-shadow: {SHADOW};
+            background: {BG_CARD};
+        }}
+        div[data-testid="stChatInput"]:focus-within {{ border-color: {PRIMARY}; }}
+
+        /* League pulse ticker -- continuous marquee of real numbers */
+        .csv-ticker {{
+            overflow: hidden;
+            white-space: nowrap;
+            background: {BG_CARD};
+            border: 1px solid {BORDER};
+            border-radius: 12px;
+            padding: 9px 0;
+            margin-bottom: 16px;
+            box-shadow: {SHADOW_SM};
+        }}
+        .csv-ticker-track {{
+            display: inline-flex;
+            align-items: center;
+            gap: 34px;
+            padding-left: 34px;
+            animation: csv-ticker-scroll 45s linear infinite;
+        }}
+        .csv-ticker:hover .csv-ticker-track {{ animation-play-state: paused; }}
+        .csv-ticker-item {{
+            display: inline-flex; align-items: center; gap: 9px;
+            color: {TEXT_DIM}; font-size: 13.5px; font-weight: 600;
+        }}
+        .csv-ticker-item b {{ color: {TEXT}; font-weight: 800; }}
+        .csv-ticker-item img {{ box-shadow: none !important; border: none !important; padding: 0 !important; }}
+        @keyframes csv-ticker-scroll {{
+            from {{ transform: translateX(0); }}
+            to {{ transform: translateX(-50%); }}
+        }}
+
         div[data-testid="stDataFrame"] {{
             border-radius: 12px; overflow: hidden;
             border: 1px solid {BORDER}; box-shadow: {SHADOW_SM};
