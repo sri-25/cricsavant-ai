@@ -35,6 +35,11 @@ if "active_franchise" not in st.session_state:
     st.session_state.active_franchise = None
 if "strategy_results" not in st.session_state:
     st.session_state.strategy_results = {}  # {(franchise, kind): (answer, trace)}
+if "scouting_reads" not in st.session_state:
+    # Persisted per player -- the old inline-only render vanished on
+    # the next rerun (any widget interaction), which read as "the AI
+    # returned nothing" (confirmed live by the user).
+    st.session_state.scouting_reads = {}  # {player_name: (answer, trace)}
 
 inject_css(accent=FRANCHISE_COLORS.get(st.session_state.active_franchise, "#e11d74"))
 
@@ -252,19 +257,32 @@ def page_war_room():
     result = st.session_state.strategy_results.get((chosen, kind))
     if result:
         answer, trace = result
-        st.markdown(
-            f'<div class="csv-reco"><div class="csv-reco-label">Recommendation · {selected_label}</div></div>',
-            unsafe_allow_html=True,
-        )
-        with st.chat_message("assistant", avatar="🧠"):
-            st.markdown(linkify(answer))
-        render_trace(trace)
-        if st.button("💾 Save to notebook", key=f"save_{kind}"):
-            res = lakebase.save_strategy_note(chosen, note_type, answer, created_by="user")
-            if res.get("success"):
-                st.toast(f"Saved to {chosen}'s strategy notebook.", icon="✅")
-            else:
-                st.error(res.get("reason", "Save failed."))
+        if answer.startswith("Agent call failed"):
+            # Surface failures loudly -- a silent nothing after a 60s
+            # run is what "the app is buggy" feels like.
+            st.error(answer)
+        else:
+            st.markdown(
+                f'<div class="csv-reco"><div class="csv-reco-label">Recommendation · {selected_label}</div></div>',
+                unsafe_allow_html=True,
+            )
+            with st.chat_message("assistant", avatar="🧠"):
+                st.markdown(linkify(answer))
+            render_trace(trace)
+            ac1, ac2, _ = st.columns([1, 1, 2])
+            if ac1.button("💾 Save to notebook", key=f"save_{kind}", use_container_width=True):
+                res = lakebase.save_strategy_note(chosen, note_type, answer, created_by="user")
+                if res.get("success"):
+                    st.toast(f"Saved to {chosen}'s strategy notebook.", icon="✅")
+                else:
+                    st.error(res.get("reason", "Save failed."))
+            ac2.download_button(
+                "⬇ Download plan (.md)",
+                data=f"# {chosen} — {selected_label}\n\n{answer}\n",
+                file_name=f"{FRANCHISE_SHORT.get(chosen, 'team')}_{kind}_plan.md",
+                mime="text/markdown",
+                use_container_width=True,
+            )
 
     st.divider()
 
@@ -300,6 +318,13 @@ def page_war_room():
             ts = pd.to_datetime(n["created_at"]).strftime("%b %d, %H:%M")
             with st.expander(f"{n['note_type'].replace('_', ' ').title()} · {ts} · by {n['created_by']}"):
                 st.markdown(n["content"])
+                st.download_button(
+                    "⬇ Download (.md)",
+                    data=f"# {chosen} — {n['note_type'].replace('_', ' ').title()} ({ts})\n\n{n['content']}\n",
+                    file_name=f"{FRANCHISE_SHORT.get(chosen, 'team')}_{n['note_type']}_{n['note_id']}.md",
+                    mime="text/markdown",
+                    key=f"dl_note_{n['note_id']}",
+                )
 
 
 # ================================================================ #
@@ -333,10 +358,20 @@ def page_analyst():
                     st.markdown(linkify(msg["content"]))
                     if msg.get("trace"):
                         render_trace(msg["trace"])
-            if st.button("New conversation", key="clear_chat"):
+            bc1, bc2, _ = st.columns([1, 1, 2])
+            if bc1.button("New conversation", key="clear_chat", use_container_width=True):
                 st.session_state.agent_messages = None
                 st.session_state.chat_display = []
                 st.rerun()
+            convo_md = "\n\n".join(
+                f"**{'You' if m['role'] == 'user' else 'Chief Analyst'}:** {m['content']}"
+                for m in st.session_state.chat_display
+            )
+            bc2.download_button(
+                "⬇ Download conversation", data=f"# {chosen} — Analyst Session\n\n{convo_md}\n",
+                file_name=f"{FRANCHISE_SHORT.get(chosen, 'team')}_analyst_session.md",
+                mime="text/markdown", use_container_width=True, key="dl_convo",
+            )
 
         prompt = st.chat_input(f"Ask about {FRANCHISE_SHORT.get(chosen, chosen)}...", key="analyst_input")
 
@@ -442,10 +477,23 @@ def page_players():
                 f"Assess {selected} as a potential auction pick for my franchise -- recent form, role fit, any news.",
                 record_in_chat=False,
             )
+        st.session_state.scouting_reads[selected] = (answer, trace)
+
+    # Rendered from state, not inline-after-click, so the read STAYS
+    # on screen across reruns instead of flashing once and vanishing.
+    scouting_read = st.session_state.scouting_reads.get(selected)
+    if scouting_read:
+        answer, trace = scouting_read
         st.markdown('<div class="csv-reco"><div class="csv-reco-label">Scouting Read</div></div>', unsafe_allow_html=True)
         with st.chat_message("assistant", avatar="🧠"):
             st.markdown(linkify(answer))
         render_trace(trace)
+        st.download_button(
+            "⬇ Download scouting read (.md)",
+            data=f"# Scouting Read: {selected}\n\n{answer}\n",
+            file_name=f"scouting_{selected.replace(' ', '_')}.md",
+            mime="text/markdown",
+        )
 
 
 # ================================================================ #
