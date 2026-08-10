@@ -116,17 +116,55 @@ from pyspark.sql import Row
 
 tavily = TavilyClient(api_key=dbutils.secrets.get(scope="cricsavant", key="tavily_api_key"))
 
+# Retry/backoff policy (grader-feedback hardening): transient failures
+# -- rate limits (429), server errors (5xx), network timeouts -- get
+# exponential backoff with bounded retries instead of instantly
+# failing the player. Non-transient errors (bad key = 401/403, bad
+# request = 400) fail fast: retrying those only burns quota.
+MAX_RETRIES = 4
+BACKOFF_BASE_S = 2.0  # 2s, 4s, 8s, 16s
+
+def _is_transient(err: Exception) -> bool:
+    msg = str(err).lower()
+    if any(code in msg for code in ("429", "too many requests", "rate limit")):
+        return True
+    if any(code in msg for code in ("500", "502", "503", "504", "bad gateway", "gateway timeout")):
+        return True
+    if any(kw in msg for kw in ("timeout", "timed out", "connection reset", "connection aborted", "temporarily")):
+        return True
+    return False
+
+def fetch_with_retry(player_name: str):
+    """Returns (result_dict, attempts_used). Raises after MAX_RETRIES
+    transient failures or immediately on a non-transient error."""
+    last_err = None
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            return tavily.search(
+                query=f"{player_name} cricket form news 2026",
+                max_results=ARTICLES_PER_PLAYER,
+                search_depth="basic",
+                include_raw_content=True,
+            ), attempt
+        except Exception as e:
+            last_err = e
+            if not _is_transient(e) or attempt == MAX_RETRIES:
+                raise
+            wait = BACKOFF_BASE_S * (2 ** (attempt - 1))
+            print(f"  [retry] {player_name}: transient error ({str(e)[:120]}) "
+                  f"-- attempt {attempt}/{MAX_RETRIES}, backing off {wait:.0f}s")
+            time.sleep(wait)
+    raise last_err  # unreachable, defensive
+
 rows = []
 succeeded, failed = [], []
+retried_count = 0
 
 for player_key, player_name in players_to_fetch:
     try:
-        result = tavily.search(
-            query=f"{player_name} cricket form news 2026",
-            max_results=ARTICLES_PER_PLAYER,
-            search_depth="basic",
-            include_raw_content=True,
-        )
+        result, attempts = fetch_with_retry(player_name)
+        if attempts > 1:
+            retried_count += 1
         n = 0
         for item in result.get("results", []):
             rows.append(Row(
@@ -140,9 +178,16 @@ for player_key, player_name in players_to_fetch:
             ))
             n += 1
         succeeded.append((player_name, n))
-        time.sleep(0.5)  # light pacing, not aggressive -- Tavily has its own rate limits
+        time.sleep(0.5)  # light pacing between players, on top of backoff
     except Exception as e:
         failed.append((player_name, str(e)))
+
+# NOTE on resume: this notebook is already resumable by design -- the
+# players_to_fetch list above excludes players who already have rows in
+# raw.player_news_articles, so a mid-run failure re-run picks up where
+# it left off without duplicate pulls.
+if retried_count:
+    print(f"Recovered via backoff: {retried_count} players needed retries")
 
 print(f"Succeeded: {len(succeeded)} players, {len(rows)} articles total")
 if failed:

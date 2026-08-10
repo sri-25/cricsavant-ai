@@ -1,0 +1,31 @@
+{
+  "name": "cricsavant-cdf-sync",
+  "description": "Recurring Lakebase change_log -> cricsavant.ops.lb_change_log_history (Delta) sync. Powers the League Analytics audit strip. Watermark-based, idempotent: safe to re-run at any time.",
+  "tasks": [
+    {
+      "task_key": "sync_change_log_to_delta",
+      "notebook_task": {
+        "notebook_path": "/Workspace/Repos/cricsavant-ai/notebooks/001_sync_change_log_to_delta",
+        "source": "WORKSPACE"
+      },
+      "timeout_seconds": 900,
+      "max_retries": 2,
+      "min_retry_interval_millis": 120000,
+      "retry_on_timeout": true
+    }
+  ],
+  "schedule": {
+    "quartz_cron_expression": "0 0 * * * ?",
+    "timezone_id": "UTC",
+    "pause_status": "UNPAUSED"
+  },
+  "email_notifications": {
+    "on_failure": ["srijan2554@gmail.com"],
+    "no_alert_for_skipped_runs": true
+  },
+  "max_concurrent_runs": 1,
+  "tags": {
+    "project": "cricsavant",
+    "purpose": "lakebase-cdf-sync"
+  }
+}
